@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""
+bathymetry_isaac.py – Szybka symulacja batymetryczna używając PhysX GPU z Isaac Sim.
+
+Nie używa ROS ani nodów — Isaac służy wyłącznie jako silnik raycastingu.
+
+Uruchomienie (w kontenerze):
+    OMNI_KIT_ALLOW_ROOT=1 python3 src/xm540_bringup/scripts/bathymetry_isaac.py
+
+Wymagania: Isaac Sim (kontener)
+"""
+
+import argparse
+import csv
+import math
+import pathlib
+import time
+
+from isaacsim import SimulationApp
+
+simulation_app = SimulationApp({"headless": True, "renderer": "RayTracedLighting"})
+
+import carb
+import numpy as np
+import omni.usd
+from omni.isaac.core import World
+from omni.physx import get_physx_scene_query_interface
+from pxr import UsdGeom, UsdPhysics, Gf, Sdf
+from ament_index_python.packages import get_package_share_directory
+
+# ---------------------------------------------------------------------------
+_PKG_SHARE        = pathlib.Path(get_package_share_directory("xm540_bringup"))
+_DEFAULT_TILES_DIR = _PKG_SHARE / "meshes" / "big_lake_simp_tiles"
+_DEFAULT_WP        = _PKG_SHARE / "waypoints.csv"
+
+LAKE_TRANSLATE      = (0.0, 0.0, -30.0)
+LAKE_SCALE          = (10.0, 10.0, 10.0)
+LAKE_ROTATE_X_DEG   = 90.0
+SONAR_RANGE_MIN     = 0.1
+SONAR_RANGE_MAX     = 500.0
+SONAR_BEAM_HALF_DEG = 1.0
+ROBOT_Z             = 0.0
+
+
+# ---------------------------------------------------------------------------
+def build_cone_dirs(beam_half_deg: float) -> list:
+    """Zwraca listę carb.Float3 — kierunki promieni stożka (oś -Z w dół)."""
+    half_rad = math.radians(beam_half_deg)
+    d  = np.array([0.0, 0.0, -1.0])
+    u  = np.array([1.0, 0.0,  0.0])
+    v  = np.array([0.0, 1.0,  0.0])
+
+    rays = [d.copy()]
+    for n_rays, frac in [(6, 1/3), (12, 2/3), (18, 1)]:
+        theta = half_rad * frac
+        for i in range(n_rays):
+            phi = 2.0 * math.pi * i / n_rays
+            ray = (math.cos(theta) * d
+                   + math.sin(theta) * (math.cos(phi) * u + math.sin(phi) * v))
+            rays.append(ray / np.linalg.norm(ray))
+
+    return [carb.Float3(float(r[0]), float(r[1]), float(r[2])) for r in rays]
+
+
+def cone_raycast(physx, origin: carb.Float3, dirs: list) -> float:
+    min_d = SONAR_RANGE_MAX
+    for d in dirs:
+        hit = physx.raycast_closest(origin, d, SONAR_RANGE_MAX)
+        if hit["hit"]:
+            min_d = min(min_d, float(hit["distance"]))
+    return max(SONAR_RANGE_MIN, min_d)
+
+
+# ---------------------------------------------------------------------------
+def _apply_transform(xf: UsdGeom.Xformable) -> None:
+    xf.ClearXformOpOrder()
+    xf.AddTranslateOp().Set(Gf.Vec3d(*LAKE_TRANSLATE))
+    xf.AddRotateXOp().Set(LAKE_ROTATE_X_DEG)
+    xf.AddScaleOp().Set(Gf.Vec3f(*LAKE_SCALE))
+
+
+def add_lake(stage, tiles_dir: pathlib.Path) -> None:
+    UsdGeom.Xform.Define(stage, "/World/lake")
+    tile_files = sorted(tiles_dir.glob("*.obj"))
+    if not tile_files:
+        raise RuntimeError(f"Brak kafelków w {tiles_dir}")
+    for i, tile_path in enumerate(tile_files):
+        prim = UsdGeom.Xform.Define(stage, f"/World/lake/tile_{i:02d}").GetPrim()
+        prim.GetReferences().AddReference(str(tile_path))
+        _apply_transform(UsdGeom.Xformable(prim))
+        UsdPhysics.CollisionAPI.Apply(prim)
+    print(f"[bathymetry_isaac] Załadowano {len(tile_files)} kafelków kolizyjnych.")
+
+
+def load_waypoints(csv_path: pathlib.Path) -> list:
+    waypoints = []
+    with open(csv_path, newline="") as f:
+        for row in csv.DictReader(f):
+            waypoints.append((float(row["world_x"]), float(row["world_y"])))
+    print(f"[bathymetry_isaac] Wczytano {len(waypoints):,} waypointów.")
+    return waypoints
+
+
+def save_pcd(pts: np.ndarray, path: pathlib.Path) -> None:
+    n = len(pts)
+    header = (
+        f"# .PCD v0.7\nVERSION 0.7\nFIELDS x y z\nSIZE 4 4 4\n"
+        f"TYPE F F F\nCOUNT 1 1 1\nWIDTH {n}\nHEIGHT 1\n"
+        f"VIEWPOINT 0 0 0 1 0 0 0\nPOINTS {n}\nDATA ascii\n"
+    )
+    with open(path, "w") as f:
+        f.write(header)
+        for x, y, z in pts:
+            f.write(f"{x:.6f} {y:.6f} {z:.6f}\n")
+
+
+# ---------------------------------------------------------------------------
+def main(tiles_dir: pathlib.Path, waypoints_path: pathlib.Path,
+         out_path: pathlib.Path, save_csv: bool) -> None:
+
+    print(f"[bathymetry_isaac] Ładowanie kafelków: {tiles_dir}")
+    world = World(stage_units_in_meters=1.0)
+    stage = omni.usd.get_context().get_stage()
+
+    add_lake(stage, tiles_dir)
+    world.reset()
+
+    # Jeden krok fizyki by PhysX zbudował BVH na GPU
+    world.step(render=False)
+
+    physx    = get_physx_scene_query_interface()
+    cone_dirs = build_cone_dirs(SONAR_BEAM_HALF_DEG)
+    waypoints = load_waypoints(waypoints_path)
+
+    n       = len(waypoints)
+    results = []
+    t0      = time.monotonic()
+
+    print(f"[bathymetry_isaac] Startuję skan {n:,} waypointów...")
+    for i, (wx, wy) in enumerate(waypoints):
+        origin = carb.Float3(wx, wy, ROBOT_Z)
+        d      = cone_raycast(physx, origin, cone_dirs)
+        results.append((wx, wy, ROBOT_Z - d, d))
+
+        if i == 0 or (i + 1) % max(1, n // 20) == 0 or i + 1 == n:
+            elapsed   = time.monotonic() - t0
+            remaining = (elapsed / (i + 1)) * (n - i - 1) if i > 0 else 0
+            pct       = 100.0 * (i + 1) / n
+            print(f"  [{i+1:>6}/{n}] {pct:5.1f}%  ETA: {remaining:.0f}s")
+
+    elapsed = time.monotonic() - t0
+    print(f"[bathymetry_isaac] Gotowe. Czas: {elapsed:.1f}s")
+
+    pts = np.array([[r[0], r[1], r[2]] for r in results], dtype=np.float32)
+
+    pcd_path = out_path.with_suffix(".pcd")
+    save_pcd(pts, pcd_path)
+    print(f"[bathymetry_isaac] PCD → {pcd_path}")
+
+    ply_path = out_path.with_suffix(".ply")
+    try:
+        import trimesh
+        trimesh.PointCloud(pts).export(str(ply_path))
+        print(f"[bathymetry_isaac] PLY → {ply_path}")
+    except ImportError:
+        pass
+
+    if save_csv:
+        csv_path = out_path.with_suffix(".csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["world_x", "world_y", "world_z", "depth"])
+            writer.writeheader()
+            writer.writerows([{"world_x": r[0], "world_y": r[1],
+                               "world_z": r[2], "depth": r[3]} for r in results])
+        print(f"[bathymetry_isaac] CSV → {csv_path}")
+
+    simulation_app.close()
+
+
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tiles",     default=str(_DEFAULT_TILES_DIR))
+    parser.add_argument("--waypoints", default=str(_DEFAULT_WP))
+    parser.add_argument("--out",       default="bathymetry_isaac")
+    parser.add_argument("--csv",       action="store_true")
+    args = parser.parse_args()
+
+    main(pathlib.Path(args.tiles),
+         pathlib.Path(args.waypoints),
+         pathlib.Path(args.out),
+         save_csv=args.csv)
