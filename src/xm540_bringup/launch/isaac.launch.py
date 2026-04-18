@@ -38,7 +38,7 @@ def generate_launch_description():
             package="robot_state_publisher",
             executable="robot_state_publisher",
             output="screen",
-            parameters=[{"robot_description": robot_description}],
+            parameters=[{"robot_description": robot_description, "use_sim_time": True}],
         ),
 
         # Symulator serwomechanizmu – serwisy sterowania + /joint_states
@@ -47,6 +47,7 @@ def generate_launch_description():
             executable="sim_driver_node",
             name="sim_driver_node",
             output="screen",
+            parameters=[{"use_sim_time": True}],
         ),
 
         # Kolektor chmury punktów
@@ -56,10 +57,11 @@ def generate_launch_description():
             name="scan_collector_node",
             output="screen",
             parameters=[{
-                "publish_rate": 2.0,
-                "source_frame": "sonar_link",
-                "max_points":   0,
-                "debug_tf":     True,
+                "use_sim_time":  True,
+                "publish_rate":  2.0,
+                "source_frame":  "sonar_link",
+                "max_points":    0,
+                "debug_tf":      True,
             }],
         ),
 
@@ -72,6 +74,7 @@ def generate_launch_description():
             parameters=[
                 mission_config,
                 {
+                    "use_sim_time":         True,
                     "waypoints_file":       waypoints_csv,
                     "sweep_waypoints_file": sweep_waypoints_csv,
                 },
@@ -84,7 +87,7 @@ def generate_launch_description():
             executable="waypoint_viz_node",
             name="waypoint_viz_node",
             output="screen",
-            parameters=[{"waypoints_file": waypoints_csv}],
+            parameters=[{"use_sim_time": True, "waypoints_file": waypoints_csv}],
         ),
 
         # RViz
@@ -94,6 +97,7 @@ def generate_launch_description():
             name="rviz2",
             output="screen",
             arguments=["-d", rviz_config],
+            parameters=[{"use_sim_time": True}],
             ros_arguments=["--log-level",
                            PythonExpression(["'rviz2:=INFO' if '", verbose,
                                              "' == '1' else 'rviz2:=WARN'"])],

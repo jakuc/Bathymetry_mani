@@ -25,7 +25,6 @@ Konfiguracja: config/mission.yaml (ładowany przez isaac.launch.py)
 import csv
 import os
 import pathlib
-import time
 from enum import Enum, auto
 
 import rclpy
@@ -125,7 +124,7 @@ class MissionSupervisorNode(Node):
         self._scenario  = scenario
         self._waypoints = waypoints
         self._wp_idx    = 0
-        self._t_start   = time.monotonic()
+        self._t_start   = self.get_clock().now()
         self._set_state(State.TELEPORT)
 
         if scenario == "baseline":
@@ -176,7 +175,8 @@ class MissionSupervisorNode(Node):
             stab = (self.get_parameter("stabilize_time").value
                     if self._scenario == "baseline"
                     else self.get_parameter("sweep_stabilize_time").value)
-            if time.monotonic() - self._t_enter >= stab:
+            elapsed = (self.get_clock().now() - self._t_enter).nanoseconds * 1e-9
+            if elapsed >= stab:
                 if self._scenario == "baseline":
                     self._readings = 0
                     self._set_state(State.WAITING_SONAR)
@@ -244,7 +244,7 @@ class MissionSupervisorNode(Node):
             self._set_state(State.TELEPORT)
 
     def _do_done(self) -> None:
-        elapsed = time.monotonic() - self._t_start
+        elapsed = (self.get_clock().now() - self._t_start).nanoseconds * 1e-9
         self.get_logger().info(
             f"Misja zakończona — {len(self._waypoints)} waypointów "
             f"w {elapsed/60:.1f} min. Zapisuję CSV..."
@@ -257,7 +257,7 @@ class MissionSupervisorNode(Node):
 
     def _set_state(self, state: State) -> None:
         self._state   = state
-        self._t_enter = time.monotonic()
+        self._t_enter = self.get_clock().now()
         # Publikuj tylko istotne zmiany stanu — nie każdy TELEPORT
         if state in (State.IDLE, State.DONE):
             self._pub_status.publish(String(data=state.name))
@@ -265,7 +265,7 @@ class MissionSupervisorNode(Node):
     def _eta_str(self, done: int, total: int) -> str:
         if done == 0:
             return "?"
-        elapsed   = time.monotonic() - self._t_start
+        elapsed   = (self.get_clock().now() - self._t_start).nanoseconds * 1e-9
         remaining = (elapsed / done) * (total - done)
         if remaining < 60:
             return f"{remaining:.0f}s"

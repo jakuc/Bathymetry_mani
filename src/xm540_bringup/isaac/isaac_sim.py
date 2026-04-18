@@ -46,6 +46,7 @@ from pxr import Usd, UsdGeom, UsdLux, UsdPhysics, Gf, Sdf
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
+from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState, LaserScan
 from std_msgs.msg import Float64
 from xm540_interfaces.srv import SetBoatPose
@@ -67,7 +68,7 @@ SONAR_BEAM_RAYS        = 37     # 1 centralny + 6 + 12 + 18 (trzy pierścienie)
 # Transform jeziora
 LAKE_TRANSLATE        = (0.0, 0.0, -30.0)
 LAKE_SCALE            = (10.0, 10.0, 10.0)
-LAKE_VISUAL_ROTATE_X  = 180.0   # big_lake.obj ma inną natywną orientację niż kafelki
+LAKE_VISUAL_ROTATE_X  = 90.0
 LAKE_TILES_ROTATE_X   = 90.0
 
 
@@ -81,6 +82,7 @@ class IsaacRosNode(Node):
         self.pending_pose: tuple[float, float] | None = None
         self.create_subscription(Float64, "/xm540_joint_z/cmd_pos", self._cb_z, 10)
         self.create_subscription(Float64, "/xm540_joint/cmd_pos",   self._cb_y, 10)
+        self._pub_clock    = self.create_publisher(Clock,       "/clock",        10)
         self._pub_sonar    = self.create_publisher(LaserScan,   "/sim/sonar",    10)
         self._pub_encoders = self.create_publisher(JointState,  "/joint_states", 10)
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
@@ -97,6 +99,12 @@ class IsaacRosNode(Node):
 
     def _cb_z(self, msg: Float64): self.cmd_z = msg.data
     def _cb_y(self, msg: Float64): self.cmd_y = msg.data
+
+    def publish_clock(self, sim_time_sec: float) -> None:
+        msg = Clock()
+        msg.clock.sec     = int(sim_time_sec)
+        msg.clock.nanosec = int((sim_time_sec % 1.0) * 1e9)
+        self._pub_clock.publish(msg)
 
     def broadcast_base_link_tf(self, stage, base_link_prim_path: str, stamp) -> None:
         """Rozgłasza TF world→base_link na podstawie rzeczywistej pozycji w Isaac Sim."""
@@ -396,15 +404,18 @@ def main():
     stage = omni.usd.get_context().get_stage()
     physx = get_physx_scene_query_interface()
 
-    last_sonar_t = time.monotonic()
-    sonar_dt     = 1.0 / SONAR_RATE_HZ
-    step_dt      = 1.0 / 60.0  # limit 60 fps
+    last_sonar_sim_t = 0.0
+    sonar_dt         = 1.0 / SONAR_RATE_HZ
 
     while simulation_app.is_running():
-        t0 = time.monotonic()
         world.step(render=True)
 
         rclpy.spin_once(ros_node, timeout_sec=0.0)
+
+        sim_time_sec = world.current_time
+
+        # Publikuj czas symulacji → nody z use_sim_time używają tego jako zegara
+        ros_node.publish_clock(sim_time_sec)
 
         # Teleportacja łódki (zlecona przez /set_boat_pose)
         if ros_node.pending_pose is not None:
@@ -421,7 +432,7 @@ def main():
         positions[idx_y]  = ros_node.cmd_y
         robot.set_joint_positions(positions)
 
-        # Jeden timestamp dla wszystkich wiadomości tej iteracji fizyki
+        # Timestamp oparty na czasie symulacji Isaaca
         ros_now = ros_node.get_clock().now()
 
         # TF world→base_link z rzeczywistej pozycji w Isaac Sim
@@ -431,18 +442,13 @@ def main():
         actual = robot.get_joint_positions()
         ros_node.publish_encoders(float(actual[idx_z]), float(actual[idx_y]), ros_now)
 
-        # Raycast → /sim/sonar (20 Hz)
-        now_wall = time.monotonic()
-        if now_wall - last_sonar_t >= sonar_dt:
-            last_sonar_t = now_wall
+        # Raycast → /sim/sonar (20 Hz sim-czasu)
+        if sim_time_sec - last_sonar_sim_t >= sonar_dt:
+            last_sonar_sim_t = sim_time_sec
             origin, direction = sonar_ray(sonar_prim_path)
             if origin is not None:
                 d = sonar_cone_cast(physx, origin, direction)
                 ros_node.publish_sonar(d, ros_now)
-
-        elapsed = time.monotonic() - t0
-        if elapsed < step_dt:
-            time.sleep(step_dt - elapsed)
 
     ros_node.destroy_node()
     rclpy.shutdown()

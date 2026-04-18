@@ -8,7 +8,6 @@ Serwisy:
 
 import math
 import threading
-import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool, Float64
@@ -39,6 +38,10 @@ class SimDriverNode(Node):
 
         # Anulowanie bieżącego sweepa
         self._sweep_cancel = threading.Event()
+
+        # Event sygnalizujący nowe dane enkoderów — sweep thread czeka na ten event
+        # zamiast sleepować, dzięki czemu działa poprawnie przy przyspieszeniu symulacji
+        self._enc_event = threading.Event()
 
         self.pub_gz_y = self.create_publisher(Float64, "/xm540_joint/cmd_pos",   10)
         self.pub_gz_z = self.create_publisher(Float64, "/xm540_joint_z/cmd_pos", 10)
@@ -76,6 +79,7 @@ class SimDriverNode(Node):
             self.velocity[0] = (self.current[0] - prev[0]) / dt
             self.velocity[1] = (self.current[1] - prev[1]) / dt
         self._last_enc_stamp = stamp_sec
+        self._enc_event.set()
 
     # --- serwisy ---
 
@@ -173,7 +177,7 @@ class SimDriverNode(Node):
             f"krok {step_deg:.1f}°, {n_total} pasów × {steps_per_strip} kroków. "
             f"Szacowany czas: {self._fmt_time(est_total)}."
         )
-        scan_start = time.monotonic()
+        scan_start = self.get_clock().now()
 
         for iz, z_deg in enumerate(z_angles):
             if cancel.is_set():
@@ -191,13 +195,14 @@ class SimDriverNode(Node):
                 if (abs(self.current[0] - self.goal[0]) <= tol_rad
                         and abs(self.velocity[0]) <= VEL_STOPPED):
                     break
-                time.sleep(0.002)
+                self._enc_event.wait()
+                self._enc_event.clear()
 
             # Snake pattern: parzyste pasy w przód, nieparzyste wstecz
             y_angles = y_forward if iz % 2 == 0 else y_backward
             kierunek  = f"-{range_deg:.0f}°→+{range_deg:.0f}°" if iz % 2 == 0 \
                         else f"+{range_deg:.0f}°→-{range_deg:.0f}°"
-            elapsed   = time.monotonic() - scan_start
+            elapsed   = (self.get_clock().now() - scan_start).nanoseconds * 1e-9
             remaining = est_total - elapsed
             self.get_logger().info(
                 f"Pas {iz + 1:3d}/{n_total} ({100 * (iz + 1) // n_total:3d}%) "
@@ -221,11 +226,12 @@ class SimDriverNode(Node):
                     if (abs(self.current[1] - self.goal[1]) <= tol_rad
                             and abs(self.velocity[1]) <= VEL_STOPPED):
                         break
-                    time.sleep(0.002)
+                    self._enc_event.wait()
+                    self._enc_event.clear()
 
-        elapsed = time.monotonic() - scan_start
+        elapsed = (self.get_clock().now() - scan_start).nanoseconds * 1e-9
         self.get_logger().info(
-            f"Skan stożkowy zakończony. Czas rzeczywisty: {self._fmt_time(elapsed)}. "
+            f"Skan stożkowy zakończony. Czas symulacji: {self._fmt_time(elapsed)}. "
             f"Powrót do pozycji 0°, 0°."
         )
 
@@ -237,7 +243,8 @@ class SimDriverNode(Node):
                 return
             if abs(self.current[0]) <= tol_rad and abs(self.current[1]) <= tol_rad:
                 break
-            time.sleep(0.002)
+            self._enc_event.wait()
+            self._enc_event.clear()
         self.get_logger().info("Powrót zakończony.")
         self._sweep_done()
 

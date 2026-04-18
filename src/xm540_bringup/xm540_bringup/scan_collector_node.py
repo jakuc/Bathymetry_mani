@@ -31,6 +31,7 @@ import collections
 import math
 import os
 import struct
+import threading
 import time as walltime
 from datetime import datetime
 
@@ -73,8 +74,14 @@ class ScanCollectorNode(Node):
         self._pub = self.create_publisher(PointCloud2, "/scan_cloud", 10)
         self.create_service(Empty, "~/clear",    self._srv_clear)
         self.create_service(Empty, "~/save_csv", self._srv_save_csv)
-        self.create_timer(1.0 / rate,  self._publish_cloud)
-        self.create_timer(0.05,        self._process_pending)   # co 50 ms próbuj TF
+        self.create_timer(0.05, self._process_pending)   # co 50 ms sim-czasu próbuj TF
+
+        # Publikacja chmury na wall-clock — RViz działa w czasie rzeczywistym
+        threading.Thread(
+            target=self._publish_cloud_loop,
+            args=(1.0 / rate,),
+            daemon=True,
+        ).start()
 
         # Bufor punktów do PointCloud2
         self._points: list[tuple[float, float, float, float]] = []
@@ -265,6 +272,11 @@ class ScanCollectorNode(Node):
         return response
 
     # ---------------------------------------------------------- publish cloud
+
+    def _publish_cloud_loop(self, interval: float) -> None:
+        while True:
+            walltime.sleep(interval)
+            self._publish_cloud()
 
     def _publish_cloud(self) -> None:
         header = Header()
