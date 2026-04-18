@@ -1,0 +1,5 @@
+# Dynamixel U2D2 USB-to-Serial adapter
+# FTDI FT232R: Vendor 0403, Product 6014
+# Po podpięciu U2D2 tworzy /dev/u2d2 z uprawnieniami dla wszystkich użytkowników
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6014", \
+    SYMLINK+="u2d2", GROUP="dialout", MODE="0666"

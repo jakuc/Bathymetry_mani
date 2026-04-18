@@ -1,0 +1,73 @@
+<?xml version="1.0"?>
+<robot name="xm540_manipulator">
+
+  <!-- Wirtualna baza (wymagana przez robot_state_publisher) -->
+  <link name="base_link"/>
+
+  <!-- Człon 0 – baza, nieruchomy -->
+  <link name="link_0">
+    <visual>
+      <origin xyz="0 0 0" rpy="3.14159 0 0"/>
+      <geometry>
+        <mesh filename="package://xm540_bringup/meshes/link_0.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="3.14159 0 0"/>
+      <geometry>
+        <mesh filename="package://xm540_bringup/meshes/link_0.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="base_to_link0" type="fixed">
+    <parent link="base_link"/>
+    <child link="link_0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Człon 1 – nieruchomy, przesunięty względem link_0 -->
+  <link name="link_1">
+    <visual>
+      <geometry>
+        <mesh filename="package://xm540_bringup/meshes/link_1.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://xm540_bringup/meshes/link_1.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="xm540_joint_z" type="revolute">
+    <parent link="link_0"/>
+    <child link="link_1"/>
+    <origin xyz="0 0 0.1255" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-1.5708" upper="1.5708" effort="10.6" velocity="2.69"/>
+  </joint>
+
+  <!-- Człon 2 – obracany przez serwo XM540 wokół osi Y -->
+  <link name="link_2">
+    <visual>
+      <geometry>
+        <mesh filename="package://xm540_bringup/meshes/link_2.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://xm540_bringup/meshes/link_2.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="xm540_joint" type="revolute">
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <origin xyz="0 0.0635 0.062" rpy="0 1.5708 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-1.5708" upper="1.5708" effort="10.6" velocity="2.69"/>
+  </joint>
+
+</robot>

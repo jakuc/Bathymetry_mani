@@ -1,0 +1,152 @@
+========================================================
+  SERWISY STEROWANIA MANIPULATOREM XM540
+  Paczka: xm540_bringup | Interfejsy: xm540_interfaces
+========================================================
+
+Uruchomienie symulacji:
+  Terminal 1:  sim_mani.sh                          (Isaac Sim + węzły ROS2)
+  Terminal 2:  ros2 run xm540_bringup operator_panel (panel operatora)
+
+Osie:
+  joint_id = 0  →  xm540_joint_z  (obrót wokół Z, link_0 → link_1, "poziomy")
+  joint_id = 1  →  xm540_joint    (obrót wokół Y, link_1 → link_2, "pionowy")
+  Zakres obu osi: ±90°
+
+
+--------------------------------------------------------
+1. /set_orientation  –  oba jointy naraz
+--------------------------------------------------------
+
+Typ:    xm540_interfaces/srv/SetOrientation
+Opis:   Ustawia pozycje obu stawów jednocześnie.
+
+Parametry żądania:
+  float64 joint_z_deg  – cel stawu Z [°], zakres ±90
+  float64 joint_y_deg  – cel stawu Y [°], zakres ±90
+
+Odpowiedź:
+  bool    success
+  string  message
+
+Przykład:
+  ros2 service call /set_orientation xm540_interfaces/srv/SetOrientation \
+    "{joint_z_deg: 45.0, joint_y_deg: -30.0}"
+
+
+--------------------------------------------------------
+2. /start_sweep  –  ręczny skan stożkowy
+--------------------------------------------------------
+
+Typ:    xm540_interfaces/srv/StartSweep
+Opis:   Uruchamia skan stożkowy (snake pattern: Z od -90° do +90°,
+        Y od -range do +range na każdym pasie). Serwis wraca natychmiast,
+        skan działa w tle. Nowe wywołanie set_position / set_orientation /
+        start_sweep przerywa bieżący skan.
+
+Parametry żądania:
+  float64 range_deg      – półkąt stożka [°], zakres (0, 90]
+  float64 step_deg       – rozdzielczość kątowa [°] (krok Y i Z)
+  float64 tolerance_deg  – dopuszczalny błąd pozycji Z [°], zalecane 0.5
+
+Odpowiedź:
+  bool    success
+  string  message
+
+Przykłady:
+  # Szeroki stożek, gruba siatka (szybki podgląd)
+  ros2 service call /start_sweep xm540_interfaces/srv/StartSweep \
+    "{range_deg: 60.0, step_deg: 5.0, tolerance_deg: 0.5}"
+
+  # Wąski stożek, drobna siatka (dokładny skan)
+  ros2 service call /start_sweep xm540_interfaces/srv/StartSweep \
+    "{range_deg: 30.0, step_deg: 1.0, tolerance_deg: 0.5}"
+
+
+--------------------------------------------------------
+3. /set_boat_pose  –  teleportacja łódki w Isaac Sim
+--------------------------------------------------------
+
+Typ:    xm540_interfaces/srv/SetBoatPose
+Opis:   Natychmiastowo przesuwa robota na podaną pozycję XY w świecie
+        Isaac Sim. Wykonanie następuje w następnej iteracji pętli fizyki.
+
+Parametry żądania:
+  float64 x   – pozycja łódki [m], oś X świata
+  float64 y   – pozycja łódki [m], oś Y świata
+
+Odpowiedź:
+  bool    success
+
+Przykład:
+  ros2 service call /set_boat_pose xm540_interfaces/srv/SetBoatPose \
+    "{x: 10.0, y: 5.0}"
+
+
+--------------------------------------------------------
+4. /mission/start_baseline  –  start pomiaru batymetrycznego
+--------------------------------------------------------
+
+Typ:    std_srvs/srv/Trigger
+Opis:   Uruchamia misję baseline: teleport do każdego waypointa
+        z waypoints.csv, jeden pomiar pionowy sonaru na punkt.
+
+Odpowiedź:
+  bool    success
+  string  message
+
+Przykład:
+  ros2 service call /mission/start_baseline std_srvs/srv/Trigger
+
+
+--------------------------------------------------------
+5. /mission/start_sweep  –  start misji sweep
+--------------------------------------------------------
+
+Typ:    std_srvs/srv/Trigger
+Opis:   Uruchamia misję sweep: teleport do wybranych punktów
+        z sweep_waypoints.csv, pełny skan stożkowy na każdym.
+
+Odpowiedź:
+  bool    success
+  string  message
+
+Przykład:
+  ros2 service call /mission/start_sweep std_srvs/srv/Trigger
+
+
+--------------------------------------------------------
+6. /mission/abort  –  przerwanie misji
+--------------------------------------------------------
+
+Typ:    std_srvs/srv/Trigger
+Opis:   Przerywa aktualnie trwającą misję (baseline lub sweep).
+
+Odpowiedź:
+  bool    success
+  string  message
+
+Przykład:
+  ros2 service call /mission/abort std_srvs/srv/Trigger
+
+
+--------------------------------------------------------
+7. /scan_collector_node/save_csv  –  ręczny zapis chmury punktów
+--------------------------------------------------------
+
+Typ:    std_srvs/srv/Empty
+Opis:   Zapisuje zgromadzone punkty do pliku CSV w katalogu ROS_LOG_DIR.
+
+Przykład:
+  ros2 service call /scan_collector_node/save_csv std_srvs/srv/Empty
+
+
+--------------------------------------------------------
+8. /scan_collector_node/clear  –  reset bufora chmury punktów
+--------------------------------------------------------
+
+Typ:    std_srvs/srv/Empty
+Opis:   Zapisuje CSV (jak powyżej) i czyści bufor punktów.
+        Używać przed nowym skanem bez restartu symulacji.
+
+Przykład:
+  ros2 service call /scan_collector_node/clear std_srvs/srv/Empty

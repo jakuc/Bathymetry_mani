@@ -1,0 +1,15 @@
+mission_supervisor_node:
+  ros__parameters:
+
+    # --- Scenariusz 1: Pomiar batymetryczny (pionowy sonar) ---
+    waypoints_file: ""          # domyślnie share/xm540_bringup/waypoints.csv
+    stabilize_time: 0.1         # czas czekania po teleporcie [s]
+    n_readings: 1               # liczba pomiarów sonaru na waypoint
+    progress_interval: 0        # 0 = co 5% misji; >0 = co N waypointów
+
+    # --- Scenariusz 2: Sweep z wybranych punktów ---
+    sweep_waypoints_file: ""    # domyślnie share/xm540_bringup/sweep_waypoints.csv
+    sweep_stabilize_time: 1.0   # dłuższe czekanie — manipulator musi spaść na miejsce
+    sweep_range_deg: 90.0       # półkąt stożka [°]
+    sweep_step_deg: 5.0         # rozdzielczość kątowa [°]
+    sweep_tolerance_deg: 0.5    # tolerancja pozycji jointa [°]

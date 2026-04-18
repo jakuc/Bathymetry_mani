@@ -1,0 +1,9 @@
+# Override dla gałęzi HW (serwa Dynamixel podpięte przez U2D2)
+# Użycie: docker compose -f docker/docker-compose.yml -f docker/docker-compose.hw.yml up
+#
+# Wymaga wcześniejszego podpięcia U2D2 - udev rule tworzy /dev/u2d2 automatycznie
+
+services:
+  mani_ros:
+    devices:
+      - /dev/u2d2:/dev/u2d2

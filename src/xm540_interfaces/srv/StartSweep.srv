@@ -1,0 +1,6 @@
+float64 range_deg      # półkąt stożka [°] – Y sweepuje ±range_deg
+float64 step_deg       # rozdzielczość kątowa [°] – krok Y między pomiarami i krok Z między pasami
+float64 tolerance_deg  # próg osiągnięcia pozycji [°], default 0.5
+---
+bool success
+string message

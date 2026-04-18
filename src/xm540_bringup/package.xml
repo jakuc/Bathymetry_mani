@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>xm540_bringup</name>
+  <version>0.1.0</version>
+  <description>Minimal bringup for Dynamixel XM540-W270 via ROS2 Jazzy</description>
+  <maintainer email="user@todo.todo">user</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>xm540_interfaces</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>ros-jazzy-dynamixel-sdk</exec_depend>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

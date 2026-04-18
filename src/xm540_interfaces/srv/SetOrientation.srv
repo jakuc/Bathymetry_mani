@@ -1,0 +1,5 @@
+float64 joint_z_deg    # obrót wokół Z (link0→link1) [°], zakres ±90
+float64 joint_y_deg    # obrót wokół Y (link1→link2) [°], zakres ±90
+---
+bool success
+string message
