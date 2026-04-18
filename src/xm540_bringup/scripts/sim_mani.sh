@@ -4,12 +4,21 @@ set -e
 ISAAC_SCRIPT=$(ros2 pkg prefix xm540_bringup)/share/xm540_bringup/isaac/isaac_sim.py
 ISAAC_LOG=/workspace/log/isaac_sim.log
 VERBOSE=0
+export ISAAC_HEADLESS=0
+export ISAAC_SIM_SPEED=10
 
 for arg in "$@"; do
     case $arg in
-        --verbose|-v) VERBOSE=1 ;;
+        --verbose|-v)    VERBOSE=1 ;;
+        --headless|-H)   ISAAC_HEADLESS=1 ;;
+        --speed=*)       ISAAC_SIM_SPEED="${arg#--speed=}" ;;
     esac
 done
+
+if awk "BEGIN { exit !($ISAAC_SIM_SPEED >= 5) }" && [ "$ISAAC_HEADLESS" -eq 0 ]; then
+    echo "[sim_mani] speed=${ISAAC_SIM_SPEED}× ≥ 5 — automatycznie włączam headless."
+    ISAAC_HEADLESS=1
+fi
 
 cleanup() {
     echo "[sim_mani] Zatrzymuję Isaac Sim..."

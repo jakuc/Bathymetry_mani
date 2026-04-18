@@ -25,6 +25,7 @@ Konfiguracja: config/mission.yaml (ładowany przez isaac.launch.py)
 import csv
 import os
 import pathlib
+import time as walltime
 from enum import Enum, auto
 
 import rclpy
@@ -57,7 +58,6 @@ class MissionSupervisorNode(Node):
         self.declare_parameter("waypoints_file",    os.path.join(_PKG_SHARE, "waypoints.csv"))
         self.declare_parameter("stabilize_time",    0.5)
         self.declare_parameter("n_readings",        1)
-        self.declare_parameter("progress_interval", 0)  # 0 = tryb procentowy (co 5%)
 
         # Parametry — scenariusz 2
         self.declare_parameter("sweep_waypoints_file", os.path.join(_PKG_SHARE, "sweep_waypoints.csv"))
@@ -73,8 +73,8 @@ class MissionSupervisorNode(Node):
         self._wp_idx     = 0
         self._readings   = 0
         self._sweep_active = False
-        self._t_enter    = 0.0
-        self._t_start    = 0.0
+        self._t_enter    = 0.0   # sim-time (dla STABILIZE)
+        self._wall_start = 0.0   # wall-clock (dla ETA i _do_done)
 
         # Serwisy klienckie
         self._cli_boat  = self.create_client(SetBoatPose, "/set_boat_pose")
@@ -124,7 +124,7 @@ class MissionSupervisorNode(Node):
         self._scenario  = scenario
         self._waypoints = waypoints
         self._wp_idx    = 0
-        self._t_start   = self.get_clock().now()
+        self._wall_start = walltime.monotonic()
         self._set_state(State.TELEPORT)
 
         if scenario == "baseline":
@@ -220,16 +220,11 @@ class MissionSupervisorNode(Node):
 
     def _do_next(self) -> None:
         self._wp_idx += 1
-        total    = len(self._waypoints)
-        interval = self.get_parameter("progress_interval").value
+        total = len(self._waypoints)
 
-        # interval=0 → co 5%; interval>0 → co N waypointów
-        if interval > 0:
-            should_log = (self._wp_idx % interval == 0 or self._wp_idx == total)
-        else:
-            prev_pct = int(100.0 * (self._wp_idx - 1) / total / 5) * 5
-            curr_pct = int(100.0 * self._wp_idx / total / 5) * 5
-            should_log = (curr_pct > prev_pct or self._wp_idx == total)
+        prev_pct   = int(100.0 * (self._wp_idx - 1) / total / 5) * 5
+        curr_pct   = int(100.0 * self._wp_idx / total / 5) * 5
+        should_log = (self._wp_idx == 1 or curr_pct > prev_pct or self._wp_idx == total)
 
         if should_log:
             pct = 100.0 * self._wp_idx / total
@@ -244,7 +239,7 @@ class MissionSupervisorNode(Node):
             self._set_state(State.TELEPORT)
 
     def _do_done(self) -> None:
-        elapsed = (self.get_clock().now() - self._t_start).nanoseconds * 1e-9
+        elapsed = walltime.monotonic() - self._wall_start
         self.get_logger().info(
             f"Misja zakończona — {len(self._waypoints)} waypointów "
             f"w {elapsed/60:.1f} min. Zapisuję CSV..."
@@ -265,7 +260,7 @@ class MissionSupervisorNode(Node):
     def _eta_str(self, done: int, total: int) -> str:
         if done == 0:
             return "?"
-        elapsed   = (self.get_clock().now() - self._t_start).nanoseconds * 1e-9
+        elapsed   = walltime.monotonic() - self._wall_start
         remaining = (elapsed / done) * (total - done)
         if remaining < 60:
             return f"{remaining:.0f}s"

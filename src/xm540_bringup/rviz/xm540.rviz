@@ -132,8 +132,8 @@ Visualization Manager:
       Axis: Z
       Channel Name: intensity
       Class: rviz_default_plugins/PointCloud2
-      Color: 255; 255; 255
-      Color Transformer: Axis
+      Color: 0; 255; 0
+      Color Transformer: FlatColor
       Decay Time: 0
       Enabled: true
       Invert Rainbow: false
@@ -144,8 +144,8 @@ Visualization Manager:
       Name: ScanCloud
       Position Transformer: XYZ
       Selectable: true
-      Size (Pixels): 1
-      Size (m): 0.05000000074505806
+      Size (Pixels): 3
+      Size (m): 1
       Style: Flat Squares
       Topic:
         Depth: 5

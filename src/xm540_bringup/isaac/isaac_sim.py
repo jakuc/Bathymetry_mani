@@ -17,16 +17,20 @@ Publikuje:
 
 import math
 import pathlib
+import threading
 import time
 
 # SimulationApp musi być wywołana przed wszystkimi importami Isaac Sim
 from isaacsim import SimulationApp
 
+import os
+_headless  = os.environ.get("ISAAC_HEADLESS",  "0") == "1"
+_sim_speed = float(os.environ.get("ISAAC_SIM_SPEED", "1"))
 simulation_app = SimulationApp({
-    "headless": False,
+    "headless": _headless,
     "width": 1280,
     "height": 720,
-    "renderer": "RayTracedLighting",  # lżejszy od domyślnego PathTracing – mniej shaderów
+    "renderer": "RayTracedLighting",
 })
 
 import carb
@@ -356,9 +360,10 @@ def add_waypoint_markers(stage, csv_path: pathlib.Path) -> None:
     pts.GetPointsAttr().Set(points)
     pts.GetWidthsAttr().Set([1.0] * len(points))   # rozmiar punktu [m]
 
-    # Żółty kolor
+    # Żółty kolor, domyślnie ukryty
     display = UsdGeom.Gprim(pts.GetPrim())
     display.GetDisplayColorAttr().Set([Gf.Vec3f(1.0, 0.9, 0.0)] * len(points))
+    UsdGeom.Imageable(pts.GetPrim()).MakeInvisible()
 
     print(f"[isaac_sim] Załadowano {len(points):,} waypointów do viewportu.")
 
@@ -368,8 +373,13 @@ def main():
     rclpy.init()
     ros_node = IsaacRosNode()
 
-    print("[isaac_sim] Importuję URDF...")
-    world = World(stage_units_in_meters=1.0)
+    spin_thread = threading.Thread(target=rclpy.spin, args=(ros_node,), daemon=True)
+    spin_thread.start()
+
+    _physics_dt   = 1.0 / 60.0
+    _rendering_dt = _physics_dt * _sim_speed
+    print(f"[isaac_sim] Przyspieszenie: {_sim_speed}× (physics_dt={_physics_dt:.4f}s, rendering_dt={_rendering_dt:.4f}s)")
+    world = World(stage_units_in_meters=1.0, physics_dt=_physics_dt, rendering_dt=_rendering_dt)
     robot_prim_path = import_urdf(URDF_PATH)
     print(f"[isaac_sim] Import zakończony.")
 
@@ -408,9 +418,8 @@ def main():
     sonar_dt         = 1.0 / SONAR_RATE_HZ
 
     while simulation_app.is_running():
-        world.step(render=True)
+        world.step(render=not _headless)
 
-        rclpy.spin_once(ros_node, timeout_sec=0.0)
 
         sim_time_sec = world.current_time
 
