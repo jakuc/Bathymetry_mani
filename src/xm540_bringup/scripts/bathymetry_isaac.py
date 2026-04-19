@@ -182,7 +182,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--tiles",     default=str(_DEFAULT_TILES_DIR))
     parser.add_argument("--waypoints", default=str(_DEFAULT_WP))
-    parser.add_argument("--out",       default="bathymetry_isaac")
+    parser.add_argument("--out",       default="/workspace/log/bathymetry_isaac")
     parser.add_argument("--csv",       action="store_true")
     args = parser.parse_args()
 
