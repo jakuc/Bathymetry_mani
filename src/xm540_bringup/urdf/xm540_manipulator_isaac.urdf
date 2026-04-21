@@ -1,13 +1,59 @@
 <?xml version="1.0"?>
 <robot name="xm540_manipulator">
 
-  <!-- Wirtualna baza -->
+  <!-- Punkt zaczepu w świecie – fix_base=True w Isaac Sim fiksuje ten link -->
+  <link name="world">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001"/>
+    </inertial>
+  </link>
+
+  <!-- Translacja X łódki -->
+  <link name="boat_x_link">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001"/>
+    </inertial>
+  </link>
+
+  <joint name="joint_boat_x" type="prismatic">
+    <parent link="world"/>
+    <child link="boat_x_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="-2000" upper="2000" effort="100000" velocity="100"/>
+  </joint>
+
+  <!-- Translacja Y łódki -->
+  <link name="boat_y_link">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001"/>
+    </inertial>
+  </link>
+
+  <joint name="joint_boat_y" type="prismatic">
+    <parent link="boat_x_link"/>
+    <child link="boat_y_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="-2000" upper="2000" effort="100000" velocity="100"/>
+  </joint>
+
+  <!-- Baza manipulatora – obrócona π wokół X, by sonar patrzył w dół -->
   <link name="base_link">
     <inertial>
       <mass value="0.001"/>
       <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001"/>
     </inertial>
   </link>
+
+  <joint name="boat_to_base" type="fixed">
+    <parent link="boat_y_link"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="3.14159 0 0"/>
+  </joint>
 
   <!-- Człon 0 – baza, nieruchomy -->
   <link name="link_0">

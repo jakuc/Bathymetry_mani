@@ -41,7 +41,8 @@ _PKG_SHARE = get_package_share_directory("xm540_bringup")
 
 class State(Enum):
     IDLE          = auto()
-    TELEPORT      = auto()
+    SEND_GOAL     = auto()
+    MOVING        = auto()
     STABILIZE     = auto()
     WAITING_SONAR = auto()
     SWEEP_START   = auto()
@@ -68,14 +69,15 @@ class MissionSupervisorNode(Node):
         self.declare_parameter("sweep_tolerance_deg",  0.5)
 
         # Stan wewnętrzny
-        self._state      = State.IDLE
-        self._scenario   = "baseline"
+        self._state        = State.IDLE
+        self._scenario     = "baseline"
         self._waypoints: list[tuple[float, float, float]] = []
-        self._wp_idx     = 0
-        self._readings   = 0
+        self._wp_idx       = 0
+        self._readings     = 0
         self._sweep_active = False
-        self._t_enter    = 0.0
-        self._t_start    = 0.0
+        self._boat_arrived = False
+        self._t_enter      = 0.0
+        self._t_start      = 0.0
 
         # Serwisy klienckie
         self._cli_boat  = self.create_client(SetBoatPose, "/set_boat_pose")
@@ -88,8 +90,9 @@ class MissionSupervisorNode(Node):
         self.create_service(Trigger, "/mission/abort",          self._srv_abort)
 
         # Topiki
-        self.create_subscription(LaserScan, "/sim/sonar",    self._cb_sonar,        10)
-        self.create_subscription(Bool,      "/sweep_active", self._cb_sweep_active, 10)
+        self.create_subscription(LaserScan, "/sim/sonar",      self._cb_sonar,        10)
+        self.create_subscription(Bool,      "/sweep_active",   self._cb_sweep_active, 10)
+        self.create_subscription(Bool,      "/boat_arrived",   self._cb_boat_arrived, 10)
         self._pub_status = self.create_publisher(String, "/mission/status", 10)
 
         # Pętla maszyny stanów — 100 Hz
@@ -126,7 +129,7 @@ class MissionSupervisorNode(Node):
         self._waypoints = waypoints
         self._wp_idx    = 0
         self._t_start   = time.monotonic()
-        self._set_state(State.TELEPORT)
+        self._set_state(State.SEND_GOAL)
 
         if scenario == "baseline":
             info = (f"Baseline: {len(waypoints)} waypointów, "
@@ -163,14 +166,22 @@ class MissionSupervisorNode(Node):
     def _cb_sweep_active(self, msg: Bool) -> None:
         self._sweep_active = msg.data
 
+    def _cb_boat_arrived(self, _msg: Bool) -> None:
+        self._boat_arrived = True
+
     # ---------------------------------------------------------------- tick
 
     def _tick(self) -> None:
         if self._state == State.IDLE:
             return
 
-        if self._state == State.TELEPORT:
-            self._do_teleport()
+        if self._state == State.SEND_GOAL:
+            self._do_send_goal()
+
+        elif self._state == State.MOVING:
+            if self._boat_arrived:
+                self._boat_arrived = False
+                self._set_state(State.STABILIZE)
 
         elif self._state == State.STABILIZE:
             stab = (self.get_parameter("stabilize_time").value
@@ -202,12 +213,13 @@ class MissionSupervisorNode(Node):
 
     # ---------------------------------------------------------------- actions
 
-    def _do_teleport(self) -> None:
+    def _do_send_goal(self) -> None:
         wp = self._waypoints[self._wp_idx]
         req = SetBoatPose.Request()
         req.x, req.y = float(wp[0]), float(wp[1])
+        self._boat_arrived = False
         self._cli_boat.call_async(req)
-        self._set_state(State.STABILIZE)
+        self._set_state(State.MOVING)
 
     def _do_sweep_start(self) -> None:
         req = StartSweep.Request()
@@ -241,7 +253,7 @@ class MissionSupervisorNode(Node):
         if self._wp_idx >= total:
             self._set_state(State.DONE)
         else:
-            self._set_state(State.TELEPORT)
+            self._set_state(State.SEND_GOAL)
 
     def _do_done(self) -> None:
         elapsed = time.monotonic() - self._t_start

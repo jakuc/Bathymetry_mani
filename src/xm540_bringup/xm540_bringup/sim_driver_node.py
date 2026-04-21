@@ -15,10 +15,10 @@ from std_msgs.msg import Bool, Float64
 from sensor_msgs.msg import JointState
 from xm540_interfaces.srv import SetOrientation, StartSweep
 
-LIMIT       = math.pi / 2        # ±90°
-MAX_VEL     = 2.69               # rad/s
-MAX_ACC     = 10.0               # rad/s² – przyspieszenie/hamowanie (profil trapezoidalny)
-VEL_STOPPED = math.radians(2.0)  # rad/s – próg "joint stoi" w warunku sweep
+LIMIT           = math.pi / 2    # ±90° — fizyczny limit sprzętu
+DEFAULT_MAX_VEL     = 2.69               # rad/s
+DEFAULT_MAX_ACC     = 10.0               # rad/s²
+DEFAULT_VEL_STOPPED = math.radians(2.0) # rad/s
 
 
 class SimDriverNode(Node):
@@ -37,6 +37,9 @@ class SimDriverNode(Node):
         # Do estymacji prędkości z enkoderów
         self._last_enc_stamp = 0.0
 
+        self.declare_parameter("max_vel_rad_s",    DEFAULT_MAX_VEL)
+        self.declare_parameter("max_acc_rad_s2",   DEFAULT_MAX_ACC)
+        self.declare_parameter("vel_stopped_rad_s", DEFAULT_VEL_STOPPED)
         # Anulowanie bieżącego sweepa
         self._sweep_cancel = threading.Event()
 
@@ -130,8 +133,6 @@ class SimDriverNode(Node):
 
     # --- conical scan thread ---
 
-    SCAN_PERIOD = 0.05   # 20 Hz – częstotliwość czujnika
-
     @staticmethod
     def _fmt_time(seconds: float) -> str:
         s = int(seconds)
@@ -143,7 +144,10 @@ class SimDriverNode(Node):
         self._pub_sweep_active.publish(Bool(data=False))
 
     def _conical_scan_thread(self, range_deg, step_deg, tolerance_deg, cancel):
-        tol_rad = math.radians(tolerance_deg)
+        max_vel     = self.get_parameter("max_vel_rad_s").value
+        max_acc     = self.get_parameter("max_acc_rad_s2").value
+        vel_stopped = self.get_parameter("vel_stopped_rad_s").value
+        tol_rad     = math.radians(tolerance_deg)
 
         # Pozycje Z: od -90° do +90°, krok step_deg
         n_z      = int(round(180.0 / step_deg))
@@ -154,13 +158,12 @@ class SimDriverNode(Node):
         y_forward  = [i * step_deg for i in range(-n_y, n_y + 1)]
         y_backward = list(reversed(y_forward))
 
-        # Szacowany czas ruchu trapezoidalnego o daną odległość kątową
         def trap_time(deg: float) -> float:
             d      = math.radians(deg)
-            d_crit = MAX_VEL * MAX_VEL / (2.0 * MAX_ACC)
+            d_crit = max_vel * max_vel / (2.0 * max_acc)
             if d <= d_crit:
-                return 2.0 * math.sqrt(2.0 * d / MAX_ACC)   # profil trójkątny
-            return MAX_VEL / MAX_ACC + d / MAX_VEL           # profil trapezoidalny
+                return 2.0 * math.sqrt(2.0 * d / max_acc)
+            return max_vel / max_acc + d / max_vel
 
         steps_per_strip  = len(y_forward)
         y_time_per_strip = steps_per_strip * trap_time(step_deg)
@@ -189,7 +192,7 @@ class SimDriverNode(Node):
                     self._sweep_done()
                     return
                 if (abs(self.current[0] - self.goal[0]) <= tol_rad
-                        and abs(self.velocity[0]) <= VEL_STOPPED):
+                        and abs(self.velocity[0]) <= vel_stopped):
                     break
                 time.sleep(0.002)
 
@@ -219,7 +222,7 @@ class SimDriverNode(Node):
                         self._sweep_done()
                         return
                     if (abs(self.current[1] - self.goal[1]) <= tol_rad
-                            and abs(self.velocity[1]) <= VEL_STOPPED):
+                            and abs(self.velocity[1]) <= vel_stopped):
                         break
                     time.sleep(0.002)
 
@@ -244,6 +247,8 @@ class SimDriverNode(Node):
     # --- timer 100 Hz ---
 
     def _tick(self):
+        max_vel = self.get_parameter("max_vel_rad_s").value
+        max_acc = self.get_parameter("max_acc_rad_s2").value
         dt = 0.01
         for i in range(2):
             delta = self.goal[i] - self._cmd[i]
@@ -251,12 +256,10 @@ class SimDriverNode(Node):
                 self._cmd_vel[i] = 0.0
                 continue
 
-            # Prędkość hamowania: v = sqrt(2 * a * |delta|), ograniczona do MAX_VEL
-            v_brake  = math.sqrt(2.0 * MAX_ACC * abs(delta))
-            v_target = math.copysign(min(MAX_VEL, v_brake), delta)
+            v_brake  = math.sqrt(2.0 * max_acc * abs(delta))
+            v_target = math.copysign(min(max_vel, v_brake), delta)
 
-            # Rampa przyspieszenia/hamowania
-            dv_max = MAX_ACC * dt
+            dv_max = max_acc * dt
             if self._cmd_vel[i] < v_target:
                 self._cmd_vel[i] = min(self._cmd_vel[i] + dv_max, v_target)
             else:

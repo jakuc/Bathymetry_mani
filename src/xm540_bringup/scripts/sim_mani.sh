@@ -32,7 +32,9 @@ for MESH in big_lake_simp.obj big_lake_simp_tiles; do
 done
 
 echo "[sim_mani] Uruchamiam Isaac Sim (pełne logi: $ISAAC_LOG)..."
-echo 'Yes' | OMNI_KIT_ALLOW_ROOT=1 python3 "$ISAAC_SCRIPT" > "$ISAAC_LOG" 2>&1 &
+ISAAC_CONFIG=$(ros2 pkg prefix xm540_bringup)/share/xm540_bringup/config/isaac_sim.yaml
+echo 'Yes' | OMNI_KIT_ALLOW_ROOT=1 python3 "$ISAAC_SCRIPT" \
+    --ros-args --params-file "$ISAAC_CONFIG" > "$ISAAC_LOG" 2>&1 &
 ISAAC_PID=$!
 
 if [ $VERBOSE -eq 1 ]; then

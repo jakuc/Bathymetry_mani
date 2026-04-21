@@ -72,28 +72,56 @@ LAKE_TILES_ROTATE_X   = 90.0
 
 
 # ---------------------------------------------------------------------------
+BOAT_SPEED             = 1.0   # m/s — domyślna prędkość łódki (nadpisywana przez config)
+BOAT_ARRIVAL_TOLERANCE = 0.05  # m — tolerancja dojazdu
+
+
 class IsaacRosNode(Node):
     def __init__(self):
         super().__init__("isaac_sim_node")
         self.cmd_z = 0.0
         self.cmd_y = 0.0
-        # Teleportacja łódki — ustawiana przez serwis, czytana w głównej pętli
-        self.pending_pose: tuple[float, float] | None = None
+        self.boat_goal: tuple[float, float] | None = None
+        self.boat_vel:  list[float] = [0.0, 0.0]   # [vx, vy] zadane do jointów
+
+        self.declare_parameter("boat_speed",            BOAT_SPEED)
+        self.declare_parameter("boat_arrival_tolerance", BOAT_ARRIVAL_TOLERANCE)
+        self.declare_parameter("sonar_rate_hz",          SONAR_RATE_HZ)
+        self.declare_parameter("sonar_range_max",        SONAR_RANGE_MAX)
+        self.declare_parameter("sonar_beam_half_deg",    SONAR_BEAM_HALF_DEG)
+
         self.create_subscription(Float64, "/xm540_joint_z/cmd_pos", self._cb_z, 10)
         self.create_subscription(Float64, "/xm540_joint/cmd_pos",   self._cb_y, 10)
         self._pub_sonar    = self.create_publisher(LaserScan,   "/sim/sonar",    10)
         self._pub_encoders = self.create_publisher(JointState,  "/joint_states", 10)
+        self._pub_arrived  = self.create_publisher(Bool,        "/boat_arrived", 10)
         self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
         self.create_service(SetBoatPose, "/set_boat_pose", self._srv_set_boat_pose)
         self.get_logger().info("IsaacRosNode gotowy.")
 
     def _srv_set_boat_pose(self, request: SetBoatPose.Request,
                            response: SetBoatPose.Response) -> SetBoatPose.Response:
-        """Zleca teleportację łódki — wykonanie w głównej pętli fizyki."""
-        self.pending_pose = (request.x, request.y)
-        self.get_logger().debug(f"SetBoatPose: x={request.x:.2f} y={request.y:.2f}")
+        """Ustawia cel nawigacyjny łódki."""
+        self.boat_goal = (request.x, request.y)
+        self.get_logger().debug(f"SetBoatPose (cel): x={request.x:.2f} y={request.y:.2f}")
         response.success = True
         return response
+
+    def update_boat_velocity(self, pos_x: float, pos_y: float) -> None:
+        """Liczy prędkości jointów łódki. Zeruje i publikuje /boat_arrived po dotarciu."""
+        if self.boat_goal is None:
+            self.boat_vel = [0.0, 0.0]
+            return
+        dx   = self.boat_goal[0] - pos_x
+        dy   = self.boat_goal[1] - pos_y
+        dist = math.sqrt(dx * dx + dy * dy)
+        if dist <= self.get_parameter("boat_arrival_tolerance").value:
+            self.boat_vel  = [0.0, 0.0]
+            self.boat_goal = None
+            self._pub_arrived.publish(Bool(data=True))
+            return
+        speed = self.get_parameter("boat_speed").value
+        self.boat_vel = [speed * dx / dist, speed * dy / dist]
 
     def _cb_z(self, msg: Float64): self.cmd_z = msg.data
     def _cb_y(self, msg: Float64): self.cmd_y = msg.data
@@ -131,6 +159,8 @@ class IsaacRosNode(Node):
         self._pub_encoders.publish(msg)
 
     def publish_sonar(self, distance: float, stamp) -> None:
+        rate_hz   = self.get_parameter("sonar_rate_hz").value
+        range_max = self.get_parameter("sonar_range_max").value
         msg = LaserScan()
         msg.header.stamp    = stamp.to_msg()
         msg.header.frame_id = "sonar_link"
@@ -138,9 +168,9 @@ class IsaacRosNode(Node):
         msg.angle_max       = 0.0
         msg.angle_increment = 0.0
         msg.time_increment  = 0.0
-        msg.scan_time       = 1.0 / SONAR_RATE_HZ
+        msg.scan_time       = 1.0 / rate_hz
         msg.range_min       = SONAR_RANGE_MIN
-        msg.range_max       = SONAR_RANGE_MAX
+        msg.range_max       = range_max
         msg.ranges          = [float(distance)]
         msg.intensities     = []
         self._pub_sonar.publish(msg)
@@ -183,27 +213,20 @@ def sonar_ray(sonar_prim_path: str) -> tuple:
     return origin, direction
 
 
-def sonar_cone_cast(physx, origin: carb.Float3, direction: carb.Float3) -> float:
-    """Rzuca stożek promieni i zwraca minimum odległości (pierwsze silne echo).
-
-    Wzorzec: 1 promień centralny + 6 promieni równomiernie na krawędzi stożka
-    o półkącie SONAR_BEAM_HALF_DEG. Zwraca minimalną odległość z trafionych
-    promieni, ograniczoną do [SONAR_RANGE_MIN, SONAR_RANGE_MAX].
-    """
+def sonar_cone_cast(physx, origin: carb.Float3, direction: carb.Float3,
+                    beam_half_deg: float, range_max: float) -> float:
+    """Rzuca stożek promieni i zwraca minimum odległości (pierwsze silne echo)."""
     d = np.array([direction.x, direction.y, direction.z], dtype=np.float64)
     d /= np.linalg.norm(d)
 
-    # Wektor prostopadły do d
     ref = np.array([1.0, 0.0, 0.0]) if abs(d[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
     u = np.cross(d, ref); u /= np.linalg.norm(u)
     v = np.cross(d, u)
 
-    half_rad = math.radians(SONAR_BEAM_HALF_DEG)
+    half_rad = math.radians(beam_half_deg)
 
-    # Kierunki: 1 centralny + 3 pierścienie (6, 12, 18 promieni) = 37 łącznie
     directions = [d]
-    rings = [(6, 1/3), (12, 2/3), (18, 1)]   # (liczba promieni, ułamek półkąta)
-    for n_rays, frac in rings:
+    for n_rays, frac in [(6, 1/3), (12, 2/3), (18, 1)]:
         theta = half_rad * frac
         for i in range(n_rays):
             phi = 2.0 * math.pi * i / n_rays
@@ -211,14 +234,14 @@ def sonar_cone_cast(physx, origin: carb.Float3, direction: carb.Float3) -> float
             ray /= np.linalg.norm(ray)
             directions.append(ray)
 
-    min_d = SONAR_RANGE_MAX
+    min_d = range_max
     for ray in directions:
         r = carb.Float3(float(ray[0]), float(ray[1]), float(ray[2]))
-        hit = physx.raycast_closest(origin, r, SONAR_RANGE_MAX)
+        hit = physx.raycast_closest(origin, r, range_max)
         if hit["hit"]:
             min_d = min(min_d, float(hit["distance"]))
 
-    return max(SONAR_RANGE_MIN, min_d)
+    return max(SONAR_RANGE_MIN, min_d)   # SONAR_RANGE_MIN pozostaje stałą (fizyczny limit sprzętu)
 
 
 def _find_robot_prim_path() -> str:
@@ -381,23 +404,20 @@ def main():
     robot = world.scene.add(Articulation(prim_path=robot_prim_path))
 
     world.reset()
-
-    # Robot w origin (0,0,0), obrócony twarzą w dół (180° wokół osi X)
-    robot.set_world_pose(
-        position=np.array([0.0, 0.0, 0.0]),
-        orientation=euler_angles_to_quat(np.array([np.pi, 0.0, 0.0])),
-    )
+    # Obrót π wokół X baked w URDF (boat_to_base), set_world_pose nie jest potrzebny
 
     dof_names = list(robot.dof_names)
     print(f"[isaac_sim] DOFs: {dof_names}")
-    idx_z = dof_names.index("xm540_joint_z")
-    idx_y = dof_names.index("xm540_joint")
+    idx_boat_x = dof_names.index("joint_boat_x")
+    idx_boat_y = dof_names.index("joint_boat_y")
+    idx_z      = dof_names.index("xm540_joint_z")
+    idx_y      = dof_names.index("xm540_joint")
 
     stage = omni.usd.get_context().get_stage()
     physx = get_physx_scene_query_interface()
 
     last_sonar_t = time.monotonic()
-    sonar_dt     = 1.0 / SONAR_RATE_HZ
+    sonar_dt     = 1.0 / ros_node.get_parameter("sonar_rate_hz").value
     step_dt      = 1.0 / 60.0  # limit 60 fps
 
     while simulation_app.is_running():
@@ -406,19 +426,20 @@ def main():
 
         rclpy.spin_once(ros_node, timeout_sec=0.0)
 
-        # Teleportacja łódki (zlecona przez /set_boat_pose)
-        if ros_node.pending_pose is not None:
-            x, y = ros_node.pending_pose
-            ros_node.pending_pose = None
-            robot.set_world_pose(
-                position=np.array([x, y, 0.0]),
-                orientation=euler_angles_to_quat(np.array([np.pi, 0.0, 0.0])),
-            )
+        # Odczytaj aktualną pozycję łódki z fizyki i zaktualizuj prędkości
+        actual = robot.get_joint_positions()
+        ros_node.update_boat_velocity(float(actual[idx_boat_x]), float(actual[idx_boat_y]))
 
-        # Zadaj pozycje jointów z komend ROS2
-        positions         = np.zeros(robot.num_dof)
-        positions[idx_z]  = ros_node.cmd_z
-        positions[idx_y]  = ros_node.cmd_y
+        # Prędkości łódki przez jointy
+        velocities             = np.zeros(robot.num_dof)
+        velocities[idx_boat_x] = ros_node.boat_vel[0]
+        velocities[idx_boat_y] = ros_node.boat_vel[1]
+        robot.set_joint_velocities(velocities)
+
+        # Pozycje manipulatora
+        positions        = np.zeros(robot.num_dof)
+        positions[idx_z] = ros_node.cmd_z
+        positions[idx_y] = ros_node.cmd_y
         robot.set_joint_positions(positions)
 
         # Jeden timestamp dla wszystkich wiadomości tej iteracji fizyki
@@ -428,7 +449,6 @@ def main():
         ros_node.broadcast_base_link_tf(stage, base_link_prim_path, ros_now)
 
         # Enkodery z fizyki Isaac Sim → /joint_states
-        actual = robot.get_joint_positions()
         ros_node.publish_encoders(float(actual[idx_z]), float(actual[idx_y]), ros_now)
 
         # Raycast → /sim/sonar (20 Hz)
@@ -437,7 +457,9 @@ def main():
             last_sonar_t = now_wall
             origin, direction = sonar_ray(sonar_prim_path)
             if origin is not None:
-                d = sonar_cone_cast(physx, origin, direction)
+                d = sonar_cone_cast(physx, origin, direction,
+                                    ros_node.get_parameter("sonar_beam_half_deg").value,
+                                    ros_node.get_parameter("sonar_range_max").value)
                 ros_node.publish_sonar(d, ros_now)
 
         elapsed = time.monotonic() - t0

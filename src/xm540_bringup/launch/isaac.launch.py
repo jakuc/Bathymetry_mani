@@ -47,6 +47,7 @@ def generate_launch_description():
             executable="sim_driver_node",
             name="sim_driver_node",
             output="screen",
+            parameters=[mission_config],
         ),
 
         # Kolektor chmury punktów

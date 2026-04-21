@@ -1,3 +1,13 @@
+sim_driver_node:
+  ros__parameters:
+
+    # --- Profil ruchu manipulatora ---
+    max_vel_rad_s:     2.69   # max prędkość jointa [rad/s]
+    max_acc_rad_s2:   10.0    # max przyspieszenie [rad/s²]
+    vel_stopped_rad_s: 0.035  # próg "joint stoi" [rad/s] (~2°/s)
+
+---
+
 mission_supervisor_node:
   ros__parameters:
 
