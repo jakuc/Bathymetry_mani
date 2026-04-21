@@ -39,15 +39,12 @@ _PKG_SHARE         = pathlib.Path(get_package_share_directory("xm540_bringup"))
 _DEFAULT_TILES_DIR = _PKG_SHARE / "meshes" / "big_lake_simp_tiles"
 _DEFAULT_LAKE_OBJ  = _PKG_SHARE / "meshes" / "big_lake_simp.obj"
 
-LAKE_TRANSLATE      = (0.0, 0.0, -30.0)
-LAKE_SCALE          = 10.0
-LAKE_SCALE_VEC      = (LAKE_SCALE, LAKE_SCALE, LAKE_SCALE)
-LAKE_ROTATE_X_DEG   = 90.0
-LAKE_TRANSLATE_Z    = LAKE_TRANSLATE[2]
-SONAR_RANGE_MIN     = 0.1
-SONAR_RANGE_MAX     = 500.0
-SONAR_BEAM_HALF_DEG = 1.0
-ROBOT_Z             = 0.0
+LAKE_TRANSLATE         = (0.0, 0.0, -30.0)
+LAKE_ROTATE_X_DEG      = 90.0
+MESH_NATURAL_REDUCTION = 100.0   # OBJ jest pomniejszony 100× względem skali rzeczywistej
+SONAR_RANGE_MIN        = 0.1
+SONAR_RANGE_MAX        = 500.0
+SONAR_BEAM_HALF_DEG    = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +132,8 @@ def generate_grid(polygon, step_obj: float):
 
 
 def build_waypoints(step_m: float, n_grid: int | None,
-                    water_y_arg: str, boat_z: float) -> list[tuple[float, float]]:
+                    water_y_arg: str, boat_z: float,
+                    lake_scale: float) -> list[tuple[float, float]]:
     """Generuje listę (world_x, world_y) — punkty trasy łódki."""
     mesh = load_mesh(_DEFAULT_LAKE_OBJ)
 
@@ -152,7 +150,7 @@ def build_waypoints(step_m: float, n_grid: int | None,
         step_obj = min((maxx - minx), (maxz - minz)) / n_grid
         print(f"[waypoints] Tryb --n-grid {n_grid}: krok OBJ = {step_obj:.4f}")
     else:
-        step_obj = step_m / LAKE_SCALE
+        step_obj = step_m / lake_scale
         print(f"[waypoints] Krok siatki: {step_m} m = {step_obj:.4f} OBJ")
 
     pts = generate_grid(polygon, step_obj)
@@ -161,9 +159,9 @@ def build_waypoints(step_m: float, n_grid: int | None,
         sys.exit(1)
 
     # Transformacja OBJ(x, z) → Isaac Sim world(x, y)
-    waypoints = [(LAKE_SCALE * p.x, -LAKE_SCALE * p.y) for p in pts]
+    waypoints = [(lake_scale * p.x, -lake_scale * p.y) for p in pts]
 
-    area_world = polygon.area * (LAKE_SCALE ** 2)
+    area_world = polygon.area * (lake_scale ** 2)
     print(f"[waypoints] Powierzchnia jeziora: ~{area_world:.0f} m²  "
           f"gęstość: 1 wp / {area_world/len(waypoints):.1f} m²")
     return waypoints
@@ -233,14 +231,14 @@ def cone_raycast(physx, origin: carb.Float3, dirs: list) -> float:
 
 # ---------------------------------------------------------------------------
 
-def _apply_transform(xf: UsdGeom.Xformable) -> None:
+def _apply_transform(xf: UsdGeom.Xformable, lake_scale: float) -> None:
     xf.ClearXformOpOrder()
     xf.AddTranslateOp().Set(Gf.Vec3d(*LAKE_TRANSLATE))
     xf.AddRotateXOp().Set(LAKE_ROTATE_X_DEG)
-    xf.AddScaleOp().Set(Gf.Vec3f(*LAKE_SCALE_VEC))
+    xf.AddScaleOp().Set(Gf.Vec3f(lake_scale, lake_scale, lake_scale))
 
 
-def add_lake(stage, tiles_dir: pathlib.Path) -> None:
+def add_lake(stage, tiles_dir: pathlib.Path, lake_scale: float) -> None:
     UsdGeom.Xform.Define(stage, "/World/lake")
     tile_files = sorted(tiles_dir.glob("*.obj"))
     if not tile_files:
@@ -248,7 +246,7 @@ def add_lake(stage, tiles_dir: pathlib.Path) -> None:
     for i, tile_path in enumerate(tile_files):
         prim = UsdGeom.Xform.Define(stage, f"/World/lake/tile_{i:02d}").GetPrim()
         prim.GetReferences().AddReference(str(tile_path))
-        _apply_transform(UsdGeom.Xformable(prim))
+        _apply_transform(UsdGeom.Xformable(prim), lake_scale)
         UsdPhysics.CollisionAPI.Apply(prim)
     print(f"[sweep_isaac] Załadowano {len(tile_files)} kafelków kolizyjnych.")
 
@@ -274,18 +272,22 @@ def build_sweep_angles(range_deg: float, step_deg: float) -> list:
 # ---------------------------------------------------------------------------
 def main(tiles_dir: pathlib.Path,
          step_m: float, n_grid: int | None, water_y: str, boat_z: float,
+         mesh_reduction: float,
          out_path: pathlib.Path, range_deg: float, step_deg: float,
          sweep_z: bool, save_csv_flag: bool) -> None:
 
+    lake_scale = MESH_NATURAL_REDUCTION / mesh_reduction
+    print(f"[sweep_isaac] Skala mesha: {mesh_reduction}× pomniejszony → ×{lake_scale:.4g} w Isaac Sim")
+
     # 1. Generuj waypoints
-    waypoints = build_waypoints(step_m, n_grid, water_y, boat_z)
+    waypoints = build_waypoints(step_m, n_grid, water_y, boat_z, lake_scale)
 
     # 2. Inicjalizacja sceny Isaac Sim
     print(f"\n[sweep_isaac] Ładowanie kafelków: {tiles_dir}")
     world = World(stage_units_in_meters=1.0)
     stage = omni.usd.get_context().get_stage()
 
-    add_lake(stage, tiles_dir)
+    add_lake(stage, tiles_dir, lake_scale)
     world.reset()
     world.step(render=False)
 
@@ -382,8 +384,11 @@ if __name__ == "__main__":
                     help="Zamiast --step: generuj ~N×N waypointów w jeziorze")
     wp.add_argument("--water-y",   default="auto",
                     help='Poziom wody w OBJ (oś Y). "auto" = max Y mesha.')
-    wp.add_argument("--boat-z",    type=float, default=0.0,
+    wp.add_argument("--boat-z",         type=float, default=0.0,
                     help="Wysokość łódki w świecie Isaac Sim [m] (domyślnie 0.0)")
+    wp.add_argument("--mesh-reduction", type=float, default=10.0,
+                    help="Ile razy mesh jest pomniejszony (domyślnie 10). "
+                         "Skala w Isaac = 100 / mesh-reduction")
 
     # Parametry symulacji
     sim = parser.add_argument_group("simulation")
@@ -403,14 +408,15 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(
-        tiles_dir    = pathlib.Path(args.tiles),
-        step_m       = args.step,
-        n_grid       = args.n_grid,
-        water_y      = args.water_y,
-        boat_z       = args.boat_z,
-        out_path     = pathlib.Path(args.out),
-        range_deg    = args.range_deg,
-        step_deg     = args.step_deg,
-        sweep_z      = not args.no_sweep_z,
-        save_csv_flag= args.csv,
+        tiles_dir     = pathlib.Path(args.tiles),
+        step_m        = args.step,
+        n_grid        = args.n_grid,
+        water_y       = args.water_y,
+        boat_z        = args.boat_z,
+        mesh_reduction= args.mesh_reduction,
+        out_path      = pathlib.Path(args.out),
+        range_deg     = args.range_deg,
+        step_deg      = args.step_deg,
+        sweep_z       = not args.no_sweep_z,
+        save_csv_flag = args.csv,
     )
