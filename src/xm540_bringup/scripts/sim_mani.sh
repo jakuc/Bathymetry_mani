@@ -40,7 +40,7 @@ ISAAC_PID=$!
 if [ $VERBOSE -eq 1 ]; then
     tail -f "$ISAAC_LOG" &
 else
-    tail -f "$ISAAC_LOG" | grep -v -iE "(shader|PSO|HLSL|xformOpOrder)" &
+    tail -f "$ISAAC_LOG" | grep --line-buffered -v -iE "(shader|PSO|HLSL|xformOpOrder|omni\.usd|omni\.hydra|omni\.isaac\.core\.articulations|omni\.isaac\.core\.prims)" | grep --line-buffered -v "^[[:space:]]*$" &
 fi
 TAIL_PID=$!
 

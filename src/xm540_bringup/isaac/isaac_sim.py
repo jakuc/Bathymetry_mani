@@ -64,8 +64,9 @@ SONAR_BEAM_HALF_DEG    = 1.0    # półkąt stożka wiązki [°]
 SONAR_BEAM_RAYS        = 37     # 1 centralny + 6 + 12 + 18 (trzy pierścienie)
 
 # Transform jeziora
-LAKE_TRANSLATE        = (0.0, 0.0, -30.0)
-LAKE_SCALE            = (10.0, 10.0, 10.0)
+# Nadpisywane w main() na podstawie parametru lake_scale
+LAKE_SCALE            = (1.0, 1.0, 1.0)
+LAKE_TRANSLATE        = (0.0, 0.0, -3.0)
 LAKE_VISUAL_ROTATE_X  = 90.0    # taki sam jak kafelki — big_lake.obj wyrównany do world
 LAKE_TILES_ROTATE_X   = 90.0
 
@@ -88,6 +89,7 @@ class IsaacRosNode(Node):
         self.idx_boat_x  = 0
         self.idx_boat_y  = 1
 
+        self.declare_parameter("world_scale",            1.0)
         self.declare_parameter("boat_speed",            BOAT_SPEED)
         self.declare_parameter("boat_arrival_tolerance", BOAT_ARRIVAL_TOLERANCE)
         self.declare_parameter("sonar_rate_hz",          SONAR_RATE_HZ)
@@ -372,7 +374,8 @@ def add_waypoint_markers(stage, csv_path: pathlib.Path) -> None:
     prim_path = "/World/waypoint_markers"
     pts = UsdGeom.Points.Define(stage, prim_path)
     pts.GetPointsAttr().Set(points)
-    pts.GetWidthsAttr().Set([1.0] * len(points))   # rozmiar punktu [m]
+    marker_size = max(0.05, LAKE_SCALE[0] * 0.1)
+    pts.GetWidthsAttr().Set([marker_size] * len(points))
 
     # Żółty kolor
     display = UsdGeom.Gprim(pts.GetPrim())
@@ -398,6 +401,12 @@ def main():
     stage = omni.usd.get_context().get_stage()
     dome = UsdLux.DomeLight.Define(stage, "/World/dome_light")
     dome.GetIntensityAttr().Set(300.0)
+
+    global LAKE_SCALE, LAKE_TRANSLATE
+    s = ros_node.get_parameter("world_scale").value
+    LAKE_SCALE     = (s, s, s)
+    LAKE_TRANSLATE = (0.0, 0.0, -s * 3.0)
+    print(f"[isaac_sim] lake_scale={s}  translate_z={-s*3.0:.1f}")
 
     add_lake(stage)
     add_ground_plane(stage)

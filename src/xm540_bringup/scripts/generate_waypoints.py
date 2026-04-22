@@ -29,6 +29,7 @@ Zależności:
 """
 
 import argparse
+import math
 import pathlib
 import sys
 
@@ -38,8 +39,8 @@ SCRIPT_DIR = pathlib.Path(__file__).parent.resolve()
 MESHES_DIR = SCRIPT_DIR.parent / "meshes"
 LAKE_OBJ   = MESHES_DIR / "big_lake_simp.obj"
 
-# Transformacja matching isaac_sim.py (LAKE_TILES_ROTATE_X = 90°, LAKE_SCALE = 10, LAKE_TRANSLATE_Z = -30)
-LAKE_SCALE       = 10.0
+# Transformacja matching isaac_sim.py (LAKE_TILES_ROTATE_X = 90°, LAKE_SCALE = 1, LAKE_TRANSLATE_Z = -30)
+LAKE_SCALE       = 1.0
 LAKE_TRANSLATE_Z = -30.0   # world_z = LAKE_SCALE * obj_y + LAKE_TRANSLATE_Z
 
 
@@ -57,6 +58,16 @@ def parse_args():
                    help="Plik wyjściowy CSV (domyślnie ../waypoints.csv)")
     p.add_argument("--boat-z",  type=float, default=0.0,
                    help="Wysokość łódki w świecie Isaac Sim [m] (domyślnie 0.0)")
+    p.add_argument("--margin", type=float, default=1.0,
+                   help="Margines od brzegu jeziora [m] (domyślnie 1.0). "
+                        "Eliminuje płytkie waypoints przy skraju.")
+    p.add_argument("--time",  type=float, default=None,
+                   help="Docelowy czas trwania misji [min]. Zastępuje --step i --n-grid; "
+                        "wymaga --speed.")
+    p.add_argument("--speed", type=float, default=None,
+                   help="Prędkość łódki [m/s]. Wymagane gdy podano --time.")
+    p.add_argument("--step-tol", type=float, default=0.5,
+                   help="Tolerancja bisection [%%] (domyślnie 0.5)")
     p.add_argument("--preview", action="store_true",
                    help="Pokaż wykres konturu i waypointów (wymaga matplotlib)")
     return p.parse_args()
@@ -170,6 +181,62 @@ def generate_grid(polygon, step_obj: float):
     return waypoints
 
 
+def path_length_world(waypoints) -> float:
+    """Dokładna długość trasy w metrach świata (suma odcinków między kolejnymi wp)."""
+    total = 0.0
+    for i in range(len(waypoints) - 1):
+        dx = (waypoints[i + 1].x - waypoints[i].x) * LAKE_SCALE
+        dz = (waypoints[i + 1].y - waypoints[i].y) * LAKE_SCALE
+        total += math.sqrt(dx * dx + dz * dz)
+    return total
+
+
+def find_step_for_time(polygon, target_time_s: float, boat_speed: float,
+                       tol_frac: float = 0.005) -> tuple[float, list]:
+    """Bisection: szuka step_obj dającego target_dist = target_time_s * boat_speed."""
+    target_dist = target_time_s * boat_speed
+    print(f"\nBisection: cel={target_dist:.1f} m  ({target_time_s/60:.1f} min × {boat_speed} m/s)")
+    print(f"Tolerancja: {tol_frac*100:.2f}%")
+
+    minx, minz, maxx, maxz = polygon.bounds
+    step_lo = 0.05 / LAKE_SCALE                           # ~5 cm — dolna granica
+    step_hi = min(maxx - minx, maxz - minz) * 0.95       # prawie cała oś — górna granica
+
+    best_wps   = []
+    best_step  = step_lo
+    best_delta = float("inf")
+
+    for it in range(60):
+        step_mid = (step_lo + step_hi) / 2.0
+        wps      = generate_grid(polygon, step_mid)
+        if not wps:
+            step_hi = step_mid
+            continue
+
+        dist  = path_length_world(wps)
+        delta = (dist - target_dist) / target_dist
+        print(f"  [{it+1:2d}] step={step_mid*LAKE_SCALE:.4f} m  "
+              f"dist={dist:.1f} m  δ={delta*100:+.2f}%  n={len(wps)}")
+
+        if abs(delta) < abs(best_delta):
+            best_delta = delta
+            best_step  = step_mid
+            best_wps   = wps
+
+        if abs(delta) <= tol_frac:
+            break
+
+        if dist > target_dist:
+            step_lo = step_mid   # trasa za długa → zwiększ step (mniej rzędów)
+        else:
+            step_hi = step_mid   # trasa za krótka → zmniejsz step (więcej rzędów)
+
+    print(f"\nWynik: step={best_step*LAKE_SCALE:.4f} m  "
+          f"dist={path_length_world(best_wps):.1f} m  "
+          f"δ={best_delta*100:+.2f}%  n={len(best_wps)}")
+    return best_step, best_wps
+
+
 def obj_to_world(obj_x: float, obj_z: float, boat_z: float):
     """Transformacja OBJ(x, z) → Isaac Sim world(x, y, z)."""
     world_x = LAKE_SCALE * obj_x
@@ -250,18 +317,31 @@ def main():
 
     polygon = get_contour_polygon(mesh, water_y)
 
+    if args.margin > 0.0:
+        margin_obj = args.margin / LAKE_SCALE
+        polygon = polygon.buffer(-margin_obj)
+        if polygon.is_empty:
+            print("BŁĄD: po erozji kontur jest pusty — zmniejsz --margin", file=sys.stderr)
+            sys.exit(1)
+        print(f"Erozja brzegu: {args.margin} m (OBJ: {margin_obj:.4f})")
+
     # Krok siatki w przestrzeni OBJ
-    if args.n_grid is not None:
-        # --n-grid N: krok dobrany tak by uzyskać ~N×N punktów
+    if args.time is not None:
+        if args.speed is None:
+            print("BŁĄD: --time wymaga --speed", file=sys.stderr)
+            sys.exit(1)
+        tol_frac = args.step_tol / 100.0
+        _, waypoints = find_step_for_time(polygon, args.time * 60.0, args.speed, tol_frac)
+    elif args.n_grid is not None:
         minx, minz, maxx, maxz = polygon.bounds
         step_m   = min((maxx - minx), (maxz - minz)) * LAKE_SCALE / args.n_grid
         step_obj = step_m / LAKE_SCALE
         print(f"Tryb --n-grid {args.n_grid}: krok {step_m:.2f} m = {step_obj:.4f} OBJ")
+        waypoints = generate_grid(polygon, step_obj)
     else:
         step_obj = args.step / LAKE_SCALE
         print(f"Krok siatki: {args.step} m (Isaac Sim) = {step_obj:.4f} (OBJ)")
-
-    waypoints = generate_grid(polygon, step_obj)
+        waypoints = generate_grid(polygon, step_obj)
 
     if not waypoints:
         print("BŁĄD: brak waypointów — sprawdź --water-y i --step", file=sys.stderr)

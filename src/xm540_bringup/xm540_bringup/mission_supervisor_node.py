@@ -138,7 +138,6 @@ class MissionSupervisorNode(Node):
         self._wp_idx       = 0
         self._wp_sent      = 0
         self._wp_completed = 0
-        self._t_start      = time.monotonic()
 
         if scenario == "baseline":
             buf = self.get_parameter("boat_buffer_size").value
@@ -150,6 +149,7 @@ class MissionSupervisorNode(Node):
             # wp[0] zaliczony przez teleport — zaczynamy od wp[1]
             self._wp_sent      = 1
             self._wp_completed = 1
+            self._t_start      = time.monotonic()  # ETA liczy tylko czas pływania
             n = min(buf, len(waypoints) - 1)
             for _ in range(n):
                 self._enqueue_next_waypoint()
@@ -157,6 +157,7 @@ class MissionSupervisorNode(Node):
             info = (f"Baseline: {len(waypoints)} waypointów, "
                     f"bufor={buf}")
         else:
+            self._t_start = time.monotonic()
             self._set_state(State.SEND_GOAL)
             info = (f"Sweep: {len(waypoints)} waypointów, "
                     f"range={self.get_parameter('sweep_range_deg').value}°, "
