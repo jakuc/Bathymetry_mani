@@ -2,14 +2,17 @@
 mission_supervisor_node – Automatyczny pomiar batymetryczny.
 
 Dwa scenariusze:
-  baseline  – teleport do każdego waypointa, 1 pomiar pionowy sonaru
-  sweep     – teleport do wybranych punktów, pełny skan stożkowy na każdym
+  baseline  – łódka płynie ciągłą trasą przez waypoints, sonar pinkuje cały czas.
+              Isaac Sim utrzymuje kolejkę waypointów; supervisor uzupełnia ją po
+              każdym /boat_arrived (sliding window = boat_buffer_size).
+  sweep     – łódka zatrzymuje się w każdym waypoincie, pełny skan stożkowy, jedzie dalej.
 
 Maszyna stanów (baseline):
-  IDLE → TELEPORT → STABILIZE → WAITING_SONAR → NEXT → DONE → IDLE
+  IDLE → CRUISING → DONE → IDLE
+  (postęp śledzony przez _wp_sent / _wp_completed; stan CRUISING trwa przez całą misję)
 
 Maszyna stanów (sweep):
-  IDLE → TELEPORT → STABILIZE → SWEEP_START → SWEEPING → NEXT → DONE → IDLE
+  IDLE → SEND_GOAL → MOVING → STABILIZE → SWEEP_START → SWEEPING → NEXT → DONE → IDLE
 
 Serwisy (oferowane):
   /mission/start_baseline  (std_srvs/Trigger)
@@ -41,6 +44,7 @@ _PKG_SHARE = get_package_share_directory("xm540_bringup")
 
 class State(Enum):
     IDLE          = auto()
+    CRUISING      = auto()   # baseline: łódka jedzie ciągle, supervisor uzupełnia kolejkę
     SEND_GOAL     = auto()
     MOVING        = auto()
     STABILIZE     = auto()
@@ -57,6 +61,7 @@ class MissionSupervisorNode(Node):
 
         # Parametry — scenariusz 1
         self.declare_parameter("waypoints_file",    os.path.join(_PKG_SHARE, "waypoints.csv"))
+        self.declare_parameter("boat_buffer_size",  5)   # ile waypointów z góry w kolejce Isaaca
         self.declare_parameter("stabilize_time",    0.5)
         self.declare_parameter("n_readings",        1)
         self.declare_parameter("progress_interval", 0)  # 0 = tryb procentowy (co 5%)
@@ -72,7 +77,9 @@ class MissionSupervisorNode(Node):
         self._state        = State.IDLE
         self._scenario     = "baseline"
         self._waypoints: list[tuple[float, float, float]] = []
-        self._wp_idx       = 0
+        self._wp_idx       = 0    # sweep: aktualny waypoint
+        self._wp_sent      = 0    # baseline: ile waypointów wysłano do kolejki Isaaca
+        self._wp_completed = 0    # baseline: ile waypointów łódka ukończyła
         self._readings     = 0
         self._sweep_active = False
         self._boat_arrived = False
@@ -80,9 +87,10 @@ class MissionSupervisorNode(Node):
         self._t_start      = 0.0
 
         # Serwisy klienckie
-        self._cli_boat  = self.create_client(SetBoatPose, "/set_boat_pose")
-        self._cli_sweep = self.create_client(StartSweep,  "/start_sweep")
-        self._cli_save  = self.create_client(Empty, "/scan_collector_node/save_csv")
+        self._cli_boat     = self.create_client(SetBoatPose, "/set_boat_pose")
+        self._cli_teleport = self.create_client(SetBoatPose, "/teleport_boat")
+        self._cli_sweep    = self.create_client(StartSweep,  "/start_sweep")
+        self._cli_save     = self.create_client(Empty, "/scan_collector_node/save_csv")
 
         # Serwisy oferowane
         self.create_service(Trigger, "/mission/start_baseline", self._srv_start_baseline)
@@ -125,16 +133,31 @@ class MissionSupervisorNode(Node):
             response.message = f"Brak waypointów: {csv_path}"
             return response
 
-        self._scenario  = scenario
-        self._waypoints = waypoints
-        self._wp_idx    = 0
-        self._t_start   = time.monotonic()
-        self._set_state(State.SEND_GOAL)
+        self._scenario     = scenario
+        self._waypoints    = waypoints
+        self._wp_idx       = 0
+        self._wp_sent      = 0
+        self._wp_completed = 0
+        self._t_start      = time.monotonic()
 
         if scenario == "baseline":
+            buf = self.get_parameter("boat_buffer_size").value
+            # Teleport do pierwszego waypointu — łódka nie płynie ze spawn point
+            wp0 = waypoints[0]
+            req = SetBoatPose.Request()
+            req.x, req.y = float(wp0[0]), float(wp0[1])
+            self._cli_teleport.call_async(req)
+            # wp[0] zaliczony przez teleport — zaczynamy od wp[1]
+            self._wp_sent      = 1
+            self._wp_completed = 1
+            n = min(buf, len(waypoints) - 1)
+            for _ in range(n):
+                self._enqueue_next_waypoint()
+            self._set_state(State.CRUISING)
             info = (f"Baseline: {len(waypoints)} waypointów, "
-                    f"stabilize={self.get_parameter('stabilize_time').value}s")
+                    f"bufor={buf}")
         else:
+            self._set_state(State.SEND_GOAL)
             info = (f"Sweep: {len(waypoints)} waypointów, "
                     f"range={self.get_parameter('sweep_range_deg').value}°, "
                     f"step={self.get_parameter('sweep_step_deg').value}°")
@@ -167,7 +190,15 @@ class MissionSupervisorNode(Node):
         self._sweep_active = msg.data
 
     def _cb_boat_arrived(self, _msg: Bool) -> None:
-        self._boat_arrived = True
+        if self._state == State.CRUISING:
+            self._wp_completed += 1
+            self._log_progress(self._wp_completed)
+            if self._wp_sent < len(self._waypoints):
+                self._enqueue_next_waypoint()
+            if self._wp_completed >= len(self._waypoints):
+                self._set_state(State.DONE)
+        else:
+            self._boat_arrived = True
 
     # ---------------------------------------------------------------- tick
 
@@ -175,7 +206,10 @@ class MissionSupervisorNode(Node):
         if self._state == State.IDLE:
             return
 
-        if self._state == State.SEND_GOAL:
+        if self._state == State.CRUISING:
+            pass  # postęp i uzupełnianie kolejki obsługiwane w _cb_boat_arrived
+
+        elif self._state == State.SEND_GOAL:
             self._do_send_goal()
 
         elif self._state == State.MOVING:
@@ -184,15 +218,9 @@ class MissionSupervisorNode(Node):
                 self._set_state(State.STABILIZE)
 
         elif self._state == State.STABILIZE:
-            stab = (self.get_parameter("stabilize_time").value
-                    if self._scenario == "baseline"
-                    else self.get_parameter("sweep_stabilize_time").value)
+            stab = self.get_parameter("sweep_stabilize_time").value
             if time.monotonic() - self._t_enter >= stab:
-                if self._scenario == "baseline":
-                    self._readings = 0
-                    self._set_state(State.WAITING_SONAR)
-                else:
-                    self._set_state(State.SWEEP_START)
+                self._set_state(State.SWEEP_START)
 
         elif self._state == State.WAITING_SONAR:
             if self._readings >= self.get_parameter("n_readings").value:
@@ -213,6 +241,30 @@ class MissionSupervisorNode(Node):
 
     # ---------------------------------------------------------------- actions
 
+    def _enqueue_next_waypoint(self) -> None:
+        """Wysyła następny waypoint do kolejki nawigacyjnej Isaaca i inkrementuje _wp_sent."""
+        wp = self._waypoints[self._wp_sent]
+        req = SetBoatPose.Request()
+        req.x, req.y = float(wp[0]), float(wp[1])
+        self._cli_boat.call_async(req)
+        self._wp_sent += 1
+
+    def _log_progress(self, done: int) -> None:
+        total    = len(self._waypoints)
+        interval = self.get_parameter("progress_interval").value
+        if interval > 0:
+            should_log = (done % interval == 0 or done == total)
+        else:
+            prev_pct = int(100.0 * (done - 1) / total / 5) * 5
+            curr_pct = int(100.0 * done / total / 5) * 5
+            should_log = (curr_pct > prev_pct or done == total)
+        if should_log:
+            pct = 100.0 * done / total
+            eta = self._eta_str(done, total)
+            msg = f"[{done:>5}/{total}] {pct:5.1f}%  ETA: {eta}"
+            self.get_logger().info(msg)
+            self._pub_status.publish(String(data=f"SCANNING {msg}"))
+
     def _do_send_goal(self) -> None:
         wp = self._waypoints[self._wp_idx]
         req = SetBoatPose.Request()
@@ -232,25 +284,8 @@ class MissionSupervisorNode(Node):
 
     def _do_next(self) -> None:
         self._wp_idx += 1
-        total    = len(self._waypoints)
-        interval = self.get_parameter("progress_interval").value
-
-        # interval=0 → co 5%; interval>0 → co N waypointów
-        if interval > 0:
-            should_log = (self._wp_idx % interval == 0 or self._wp_idx == total)
-        else:
-            prev_pct = int(100.0 * (self._wp_idx - 1) / total / 5) * 5
-            curr_pct = int(100.0 * self._wp_idx / total / 5) * 5
-            should_log = (curr_pct > prev_pct or self._wp_idx == total)
-
-        if should_log:
-            pct = 100.0 * self._wp_idx / total
-            eta = self._eta_str(self._wp_idx, total)
-            msg = f"[{self._wp_idx:>5}/{total}] {pct:5.1f}%  ETA: {eta}"
-            self.get_logger().info(msg)
-            self._pub_status.publish(String(data=f"SCANNING {msg}"))
-
-        if self._wp_idx >= total:
+        self._log_progress(self._wp_idx)
+        if self._wp_idx >= len(self._waypoints):
             self._set_state(State.DONE)
         else:
             self._set_state(State.SEND_GOAL)

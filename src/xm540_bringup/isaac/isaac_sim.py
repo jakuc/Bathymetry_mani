@@ -18,6 +18,7 @@ Publikuje:
 import math
 import pathlib
 import time
+from collections import deque
 
 # SimulationApp musi być wywołana przed wszystkimi importami Isaac Sim
 from isaacsim import SimulationApp
@@ -45,11 +46,9 @@ from pxr import Usd, UsdGeom, UsdLux, UsdPhysics, Gf, Sdf
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import TransformStamped
 from sensor_msgs.msg import JointState, LaserScan
-from std_msgs.msg import Float64
+from std_msgs.msg import Bool, Float64
 from xm540_interfaces.srv import SetBoatPose
-import tf2_ros
 from ament_index_python.packages import get_package_share_directory
 
 # ---------------------------------------------------------------------------
@@ -67,7 +66,7 @@ SONAR_BEAM_RAYS        = 37     # 1 centralny + 6 + 12 + 18 (trzy pierścienie)
 # Transform jeziora
 LAKE_TRANSLATE        = (0.0, 0.0, -30.0)
 LAKE_SCALE            = (10.0, 10.0, 10.0)
-LAKE_VISUAL_ROTATE_X  = 180.0   # big_lake.obj ma inną natywną orientację niż kafelki
+LAKE_VISUAL_ROTATE_X  = 90.0    # taki sam jak kafelki — big_lake.obj wyrównany do world
 LAKE_TILES_ROTATE_X   = 90.0
 
 
@@ -81,8 +80,13 @@ class IsaacRosNode(Node):
         super().__init__("isaac_sim_node")
         self.cmd_z = 0.0
         self.cmd_y = 0.0
-        self.boat_goal: tuple[float, float] | None = None
-        self.boat_vel:  list[float] = [0.0, 0.0]   # [vx, vy] zadane do jointów
+        self.boat_queue: deque[tuple[float, float]] = deque()
+        self.boat_vel:   list[float] = [0.0, 0.0]   # [vx, vy] zadane do jointów
+
+        # Wypełniane przez main() po imporcie URDF
+        self.robot       = None
+        self.idx_boat_x  = 0
+        self.idx_boat_y  = 1
 
         self.declare_parameter("boat_speed",            BOAT_SPEED)
         self.declare_parameter("boat_arrival_tolerance", BOAT_ARRIVAL_TOLERANCE)
@@ -95,30 +99,51 @@ class IsaacRosNode(Node):
         self._pub_sonar    = self.create_publisher(LaserScan,   "/sim/sonar",    10)
         self._pub_encoders = self.create_publisher(JointState,  "/joint_states", 10)
         self._pub_arrived  = self.create_publisher(Bool,        "/boat_arrived", 10)
-        self._tf_broadcaster = tf2_ros.TransformBroadcaster(self)
-        self.create_service(SetBoatPose, "/set_boat_pose", self._srv_set_boat_pose)
+        self.create_service(SetBoatPose, "/set_boat_pose",    self._srv_set_boat_pose)
+        self.create_service(SetBoatPose, "/teleport_boat",    self._srv_teleport_boat)
         self.get_logger().info("IsaacRosNode gotowy.")
+
+    def _srv_teleport_boat(self, request: SetBoatPose.Request,
+                           response: SetBoatPose.Response) -> SetBoatPose.Response:
+        """Teleportuje łódkę natychmiast do (x, y) przez direct set_joint_positions."""
+        if self.robot is not None:
+            self.boat_queue.clear()
+            self.robot.set_joint_positions(
+                np.array([request.x, request.y]),
+                joint_indices=np.array([self.idx_boat_x, self.idx_boat_y]),
+            )
+            self.boat_vel = [0.0, 0.0]
+            self.get_logger().info(f"Teleport: x={request.x:.1f} y={request.y:.1f}")
+        response.success = True
+        return response
 
     def _srv_set_boat_pose(self, request: SetBoatPose.Request,
                            response: SetBoatPose.Response) -> SetBoatPose.Response:
-        """Ustawia cel nawigacyjny łódki."""
-        self.boat_goal = (request.x, request.y)
-        self.get_logger().debug(f"SetBoatPose (cel): x={request.x:.2f} y={request.y:.2f}")
+        """Dodaje waypoint do kolejki nawigacyjnej łódki."""
+        self.boat_queue.append((request.x, request.y))
+        self.get_logger().debug(
+            f"SetBoatPose (kolejka +1={len(self.boat_queue)}): x={request.x:.2f} y={request.y:.2f}"
+        )
         response.success = True
         return response
 
     def update_boat_velocity(self, pos_x: float, pos_y: float) -> None:
-        """Liczy prędkości jointów łódki. Zeruje i publikuje /boat_arrived po dotarciu."""
-        if self.boat_goal is None:
+        """Liczy prędkości jointów łódki w kierunku aktualnego waypointu.
+
+        Po dotarciu: publikuje /boat_arrived, usuwa waypoint z kolejki i płynie
+        do następnego bez zatrzymywania. Jeśli kolejka pusta — stoi.
+        """
+        if not self.boat_queue:
             self.boat_vel = [0.0, 0.0]
             return
-        dx   = self.boat_goal[0] - pos_x
-        dy   = self.boat_goal[1] - pos_y
+        target_x, target_y = self.boat_queue[0]
+        dx   = target_x - pos_x
+        dy   = target_y - pos_y
         dist = math.sqrt(dx * dx + dy * dy)
         if dist <= self.get_parameter("boat_arrival_tolerance").value:
-            self.boat_vel  = [0.0, 0.0]
-            self.boat_goal = None
+            self.boat_queue.popleft()
             self._pub_arrived.publish(Bool(data=True))
+            # nie zerujemy boat_vel — następna iteracja ustawi kierunek do kolejnego wp
             return
         speed = self.get_parameter("boat_speed").value
         self.boat_vel = [speed * dx / dist, speed * dy / dist]
@@ -126,36 +151,14 @@ class IsaacRosNode(Node):
     def _cb_z(self, msg: Float64): self.cmd_z = msg.data
     def _cb_y(self, msg: Float64): self.cmd_y = msg.data
 
-    def broadcast_base_link_tf(self, stage, base_link_prim_path: str, stamp) -> None:
-        """Rozgłasza TF world→base_link na podstawie rzeczywistej pozycji w Isaac Sim."""
-        prim = stage.GetPrimAtPath(base_link_prim_path)
-        if not prim.IsValid():
-            return
-        matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
-        t_vec  = matrix.ExtractTranslation()
-        q      = matrix.ExtractRotationQuat()
-        qi     = q.GetImaginary()
-
-        msg = TransformStamped()
-        msg.header.stamp    = stamp.to_msg()
-        msg.header.frame_id = "world"
-        msg.child_frame_id  = "base_link"
-        msg.transform.translation.x = float(t_vec[0])
-        msg.transform.translation.y = float(t_vec[1])
-        msg.transform.translation.z = float(t_vec[2])
-        msg.transform.rotation.x    = float(qi[0])
-        msg.transform.rotation.y    = float(qi[1])
-        msg.transform.rotation.z    = float(qi[2])
-        msg.transform.rotation.w    = float(q.GetReal())
-        self._tf_broadcaster.sendTransform(msg)
-
-    def publish_encoders(self, pos_z: float, pos_y: float, stamp) -> None:
+    def publish_encoders(self, pos_z: float, pos_y: float,
+                         boat_x: float, boat_y: float, stamp) -> None:
         msg = JointState()
         msg.header.stamp = stamp.to_msg()
-        msg.name         = ["xm540_joint_z", "xm540_joint"]
-        msg.position     = [pos_z, pos_y]
-        msg.velocity     = [0.0, 0.0]
-        msg.effort       = [0.0, 0.0]
+        msg.name         = ["xm540_joint_z", "xm540_joint", "joint_boat_x", "joint_boat_y"]
+        msg.position     = [pos_z, pos_y, boat_x, boat_y]
+        msg.velocity     = [0.0, 0.0, 0.0, 0.0]
+        msg.effort       = [0.0, 0.0, 0.0, 0.0]
         self._pub_encoders.publish(msg)
 
     def publish_sonar(self, distance: float, stamp) -> None:
@@ -389,8 +392,7 @@ def main():
     print(f"[isaac_sim] Import zakończony.")
 
     print(f"[isaac_sim] Robot: {robot_prim_path}")
-    sonar_prim_path     = f"{robot_prim_path}/sonar_link"
-    base_link_prim_path = f"{robot_prim_path}/base_link"
+    sonar_prim_path = f"{robot_prim_path}/sonar_link"
 
     # DomeLight – równomierne oświetlenie ze wszystkich kierunków, brak cieni kierunkowych
     stage = omni.usd.get_context().get_stage()
@@ -404,7 +406,23 @@ def main():
     robot = world.scene.add(Articulation(prim_path=robot_prim_path))
 
     world.reset()
-    # Obrót π wokół X baked w URDF (boat_to_base), set_world_pose nie jest potrzebny
+
+    # Wyłącz position drive dla jointów łódki — Isaac Sim tworzy go domyślnie przy imporcie
+    # URDF (bo <limit effort=...> jest zdefiniowany). Z niezerowym stiffness drive walczy
+    # z set_joint_velocities, uniemożliwiając ruch.
+    stage_after_reset = omni.usd.get_context().get_stage()
+    for joint_name in ["joint_boat_x", "joint_boat_y"]:
+        found = False
+        for prim in stage_after_reset.Traverse():
+            if prim.GetName() == joint_name and prim.IsA(UsdPhysics.Joint):
+                drive = UsdPhysics.DriveAPI.Apply(prim, "linear")
+                drive.GetStiffnessAttr().Set(0.0)
+                drive.GetDampingAttr().Set(0.0)
+                print(f"[isaac_sim] Drive wyłączony: {prim.GetPath()}")
+                found = True
+                break
+        if not found:
+            print(f"[isaac_sim] WARN: nie znaleziono primu joint dla {joint_name}")
 
     dof_names = list(robot.dof_names)
     print(f"[isaac_sim] DOFs: {dof_names}")
@@ -412,6 +430,10 @@ def main():
     idx_boat_y = dof_names.index("joint_boat_y")
     idx_z      = dof_names.index("xm540_joint_z")
     idx_y      = dof_names.index("xm540_joint")
+
+    ros_node.robot      = robot
+    ros_node.idx_boat_x = idx_boat_x
+    ros_node.idx_boat_y = idx_boat_y
 
     stage = omni.usd.get_context().get_stage()
     physx = get_physx_scene_query_interface()
@@ -430,26 +452,25 @@ def main():
         actual = robot.get_joint_positions()
         ros_node.update_boat_velocity(float(actual[idx_boat_x]), float(actual[idx_boat_y]))
 
-        # Prędkości łódki przez jointy
-        velocities             = np.zeros(robot.num_dof)
-        velocities[idx_boat_x] = ros_node.boat_vel[0]
-        velocities[idx_boat_y] = ros_node.boat_vel[1]
-        robot.set_joint_velocities(velocities)
+        # Prędkości łódki — tylko jointy łódki, żeby nie nadpisywać pozycji manipulatora
+        robot.set_joint_velocities(
+            np.array([ros_node.boat_vel[0], ros_node.boat_vel[1]]),
+            joint_indices=np.array([idx_boat_x, idx_boat_y]),
+        )
 
-        # Pozycje manipulatora
-        positions        = np.zeros(robot.num_dof)
-        positions[idx_z] = ros_node.cmd_z
-        positions[idx_y] = ros_node.cmd_y
-        robot.set_joint_positions(positions)
+        # Pozycje manipulatora — tylko jointy manipulatora, żeby nie resetować pozycji łódki
+        robot.set_joint_positions(
+            np.array([ros_node.cmd_z, ros_node.cmd_y]),
+            joint_indices=np.array([idx_z, idx_y]),
+        )
 
         # Jeden timestamp dla wszystkich wiadomości tej iteracji fizyki
         ros_now = ros_node.get_clock().now()
 
-        # TF world→base_link z rzeczywistej pozycji w Isaac Sim
-        ros_node.broadcast_base_link_tf(stage, base_link_prim_path, ros_now)
-
-        # Enkodery z fizyki Isaac Sim → /joint_states
-        ros_node.publish_encoders(float(actual[idx_z]), float(actual[idx_y]), ros_now)
+        # Enkodery z fizyki Isaac Sim → /joint_states (wszystkie 4 jointy)
+        # robot_state_publisher buduje pełny łańcuch TF na podstawie tych pozycji
+        ros_node.publish_encoders(float(actual[idx_z]), float(actual[idx_y]),
+                                  float(actual[idx_boat_x]), float(actual[idx_boat_y]), ros_now)
 
         # Raycast → /sim/sonar (20 Hz)
         now_wall = time.monotonic()

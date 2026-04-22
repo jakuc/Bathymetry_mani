@@ -13,7 +13,8 @@ mission_supervisor_node:
 
     # --- Scenariusz 1: Pomiar batymetryczny (pionowy sonar) ---
     waypoints_file: ""          # domyślnie share/xm540_bringup/waypoints.csv
-    stabilize_time: 0.1         # czas czekania po teleporcie [s]
+    boat_buffer_size: 5         # ile waypointów z góry w kolejce Isaaca
+    stabilize_time: 0.1         # czas czekania po dotarciu (sweep) [s]
     n_readings: 1               # liczba pomiarów sonaru na waypoint
     progress_interval: 0        # 0 = co 5% misji; >0 = co N waypointów
 

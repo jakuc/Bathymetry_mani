@@ -33,14 +33,14 @@ done
 
 echo "[sim_mani] Uruchamiam Isaac Sim (pełne logi: $ISAAC_LOG)..."
 ISAAC_CONFIG=$(ros2 pkg prefix xm540_bringup)/share/xm540_bringup/config/isaac_sim.yaml
-echo 'Yes' | OMNI_KIT_ALLOW_ROOT=1 python3 "$ISAAC_SCRIPT" \
+echo 'Yes' | OMNI_KIT_ALLOW_ROOT=1 PYTHONUNBUFFERED=1 python3 "$ISAAC_SCRIPT" \
     --ros-args --params-file "$ISAAC_CONFIG" > "$ISAAC_LOG" 2>&1 &
 ISAAC_PID=$!
 
 if [ $VERBOSE -eq 1 ]; then
     tail -f "$ISAAC_LOG" &
 else
-    tail -f "$ISAAC_LOG" | grep -v -iE "(shader|PSO|HLSL)" &
+    tail -f "$ISAAC_LOG" | grep -v -iE "(shader|PSO|HLSL|xformOpOrder)" &
 fi
 TAIL_PID=$!
 
