@@ -54,8 +54,10 @@ def parse_args():
                    help='Poziom wody w OBJ (oś Y). "auto" = max Y mesha. '
                         'Dla world_z=0: obj_y = (0 - LAKE_TRANSLATE_Z) / LAKE_SCALE = 3.0')
     p.add_argument("--output",  type=pathlib.Path,
-                   default=SCRIPT_DIR.parent / "waypoints.csv",
-                   help="Plik wyjściowy CSV (domyślnie ../waypoints.csv)")
+                   default=None,
+                   help="Plik wyjściowy CSV (domyślnie: waypoints.csv / waypoints_sweep.csv / waypoints_time.csv)")
+    p.add_argument("--sweep", action="store_true",
+                   help="Generuje waypoints dla scenariusza sweep (domyślny output: waypoints_sweep.csv)")
     p.add_argument("--boat-z",  type=float, default=0.0,
                    help="Wysokość łódki w świecie Isaac Sim [m] (domyślnie 0.0)")
     p.add_argument("--margin", type=float, default=1.0,
@@ -301,6 +303,26 @@ def preview(polygon, waypoints, step_obj: float):
 
 def main():
     args = parse_args()
+
+    if args.output is None:
+        if args.time is not None:
+            stem = f"waypoints_time_{args.time}min_{args.speed}mps"
+        elif args.n_grid is not None:
+            base = "waypoints_sweep" if args.sweep else "waypoints"
+            stem = f"{base}_ngrid_{args.n_grid}"
+        else:
+            base = "waypoints_sweep" if args.sweep else "waypoints"
+            stem = f"{base}_step_{args.step}"
+        args.output = SCRIPT_DIR.parent / f"{stem}.csv"
+
+    mode_count = sum([args.time is not None, args.n_grid is not None, args.step != 2.0])
+    if mode_count > 1:
+        active = []
+        if args.time    is not None: active.append("--time")
+        if args.n_grid  is not None: active.append("--n-grid")
+        if args.step    != 2.0:      active.append("--step")
+        print(f"WARN: podano kolidujące tryby {active} — używam pierwszego z listy "
+              f"(--time > --n-grid > --step)", file=sys.stderr)
 
     mesh = load_mesh(LAKE_OBJ)
 
