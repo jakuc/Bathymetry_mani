@@ -7,6 +7,7 @@ isaac_sim_node:
     # --- Łódka ---
     boat_speed:             1.0   # prędkość łódki [m/s]
     boat_arrival_tolerance: 0.05  # tolerancja dojazdu do waypointa [m]
+    boat_waypoint_timeout_factor: 3.0  # timeout = (dist/speed) * factor; po przekroczeniu: skip
 
     # --- Sonar ---
     sonar_rate_hz:       20.0   # częstotliwość publikowania pomiaru [Hz]

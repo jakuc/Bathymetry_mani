@@ -83,6 +83,9 @@ class IsaacRosNode(Node):
         self.cmd_y = 0.0
         self.boat_queue: deque[tuple[float, float]] = deque()
         self.boat_vel:   list[float] = [0.0, 0.0]   # [vx, vy] zadane do jointów
+        self._wp_target_prev: tuple[float, float] | None = None
+        self._wp_t_enter:   float = 0.0
+        self._wp_timeout:   float = 0.0
 
         # Wypełniane przez main() po imporcie URDF
         self.robot       = None
@@ -92,6 +95,7 @@ class IsaacRosNode(Node):
         self.declare_parameter("world_scale",            1.0)
         self.declare_parameter("boat_speed",            BOAT_SPEED)
         self.declare_parameter("boat_arrival_tolerance", BOAT_ARRIVAL_TOLERANCE)
+        self.declare_parameter("boat_waypoint_timeout_factor", 3.0)  # timeout = dist/speed * factor
         self.declare_parameter("sonar_rate_hz",          SONAR_RATE_HZ)
         self.declare_parameter("sonar_range_max",        SONAR_RANGE_MAX)
         self.declare_parameter("sonar_beam_half_deg",    SONAR_BEAM_HALF_DEG)
@@ -142,10 +146,25 @@ class IsaacRosNode(Node):
         dx   = target_x - pos_x
         dy   = target_y - pos_y
         dist = math.sqrt(dx * dx + dy * dy)
-        if dist <= self.get_parameter("boat_arrival_tolerance").value:
+
+        if (target_x, target_y) != self._wp_target_prev:
+            self._wp_target_prev = (target_x, target_y)
+            self._wp_t_enter     = time.monotonic()
+            speed  = self.get_parameter("boat_speed").value
+            factor = self.get_parameter("boat_waypoint_timeout_factor").value
+            self._wp_timeout = (dist / speed) * factor
+
+        elapsed = time.monotonic() - self._wp_t_enter
+        if (dist <= self.get_parameter("boat_arrival_tolerance").value or
+                elapsed >= self._wp_timeout):
+            if elapsed >= self._wp_timeout:
+                self.get_logger().warn(
+                    f"Waypoint timeout ({self._wp_timeout:.1f}s), skip: "
+                    f"({target_x:.2f}, {target_y:.2f})  dist={dist:.2f} m"
+                )
             self.boat_queue.popleft()
+            self._wp_target_prev = None
             self._pub_arrived.publish(Bool(data=True))
-            # nie zerujemy boat_vel — następna iteracja ustawi kierunek do kolejnego wp
             return
         speed = self.get_parameter("boat_speed").value
         self.boat_vel = [speed * dx / dist, speed * dy / dist]

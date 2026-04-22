@@ -28,6 +28,7 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=all
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
       - OMNI_KIT_ALLOW_ROOT=1
+      - ROS_LOG_DIR=/workspace/log
 
     volumes:
       # Kod źródłowy - edytujesz na hoscie, kontener widzi natychmiast
@@ -35,7 +36,7 @@ services:
       # Artefakty build przeżywają restart kontenera (named volumes)
       - ros_ws_build:/workspace/build
       - ros_ws_install:/workspace/install
-      - ros_ws_log:/workspace/log
+      - ../log:/workspace/log
       # X11 - GUI (RViz, Isaac Sim)
       - /tmp/.X11-unix:/tmp/.X11-unix
       # Isaac Sim cache – rozszerzenia Kit pobierane przy pierwszym uruchomieniu
@@ -49,6 +50,5 @@ services:
 volumes:
   ros_ws_build:
   ros_ws_install:
-  ros_ws_log:
   isaac_cache:
   isaac_shader_cache:
