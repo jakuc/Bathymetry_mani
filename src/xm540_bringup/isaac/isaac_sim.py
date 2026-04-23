@@ -435,15 +435,21 @@ def main():
 
     world.reset()
 
-    # Wyłącz position drive dla jointów łódki — Isaac Sim tworzy go domyślnie przy imporcie
-    # URDF (bo <limit effort=...> jest zdefiniowany). Z niezerowym stiffness drive walczy
-    # z set_joint_velocities, uniemożliwiając ruch.
+    # Wyłącz position drive dla wszystkich kontrolowanych jointów — Isaac Sim tworzy go
+    # domyślnie przy imporcie URDF (bo <limit effort=...> jest zdefiniowany). Z niezerowym
+    # stiffness drive walczy z set_joint_velocities/set_joint_positions, uniemożliwiając ruch.
     stage_after_reset = omni.usd.get_context().get_stage()
-    for joint_name in ["joint_boat_x", "joint_boat_y"]:
+    drives_to_disable = {
+        "joint_boat_x": "linear",
+        "joint_boat_y": "linear",
+        "xm540_joint_z": "angular",
+        "xm540_joint":   "angular",
+    }
+    for joint_name, drive_type in drives_to_disable.items():
         found = False
         for prim in stage_after_reset.Traverse():
             if prim.GetName() == joint_name and prim.IsA(UsdPhysics.Joint):
-                drive = UsdPhysics.DriveAPI.Apply(prim, "linear")
+                drive = UsdPhysics.DriveAPI.Apply(prim, drive_type)
                 drive.GetStiffnessAttr().Set(0.0)
                 drive.GetDampingAttr().Set(0.0)
                 print(f"[isaac_sim] Drive wyłączony: {prim.GetPath()}")
