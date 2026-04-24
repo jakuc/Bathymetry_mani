@@ -18,9 +18,7 @@ def generate_launch_description():
     urdf_path = os.path.join(pkg_share, "urdf", "xm540_manipulator_isaac.urdf")
     rviz_config = os.path.join(pkg_share, "rviz", "xm540.rviz")
 
-    waypoints_csv       = os.path.join(pkg_share, "waypoints.csv")
-    sweep_waypoints_csv = os.path.join(pkg_share, "sweep_waypoints.csv")
-    mission_config      = os.path.join(pkg_share, "config", "mission.yaml")
+    mission_config = os.path.join(pkg_share, "config", "mission.yaml")
 
     with open(urdf_path, "r") as f:
         robot_description = f.read()
@@ -70,13 +68,7 @@ def generate_launch_description():
             executable="mission_supervisor_node",
             name="mission_supervisor_node",
             output="screen",
-            parameters=[
-                mission_config,
-                {
-                    "waypoints_file":       waypoints_csv,
-                    "sweep_waypoints_file": sweep_waypoints_csv,
-                },
-            ],
+            parameters=[mission_config],
         ),
 
         # Wizualizacja waypointów (MarkerArray → RViz)
@@ -85,7 +77,7 @@ def generate_launch_description():
             executable="waypoint_viz_node",
             name="waypoint_viz_node",
             output="screen",
-            parameters=[{"waypoints_file": waypoints_csv}],
+            parameters=[mission_config],
         ),
 
         # RViz

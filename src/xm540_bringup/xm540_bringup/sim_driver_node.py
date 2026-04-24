@@ -10,8 +10,9 @@ import math
 import threading
 import time
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Float64
 from sensor_msgs.msg import JointState
 from xm540_interfaces.srv import SetOrientation, StartSweep
 
@@ -41,18 +42,18 @@ class SimDriverNode(Node):
         self.declare_parameter("sonar_rate_hz",  DEFAULT_SONAR_HZ)
 
         self._sweep_cancel = threading.Event()
+        _cg = ReentrantCallbackGroup()
 
         self.pub_gz_y = self.create_publisher(Float64, "/xm540_joint/cmd_pos",   10)
         self.pub_gz_z = self.create_publisher(Float64, "/xm540_joint_z/cmd_pos", 10)
-        self._pub_sweep_active = self.create_publisher(Bool, "/sweep_active", 10)
 
-        self.create_subscription(Float64,    "/servo/goal_position", self._cb_goal_y,   10)
-        self.create_subscription(JointState, "/joint_states",        self._cb_encoders, 10)
+        self.create_subscription(Float64,    "/servo/goal_position", self._cb_goal_y,   10, callback_group=_cg)
+        self.create_subscription(JointState, "/joint_states",        self._cb_encoders, 10, callback_group=_cg)
 
-        self.create_service(SetOrientation, "set_orientation", self._srv_set_orientation)
-        self.create_service(StartSweep,     "start_sweep",     self._srv_start_sweep)
+        self.create_service(SetOrientation, "set_orientation", self._srv_set_orientation, callback_group=_cg)
+        self.create_service(StartSweep,     "start_sweep",     self._srv_start_sweep,     callback_group=_cg)
 
-        self.create_timer(0.01, self._tick)
+        self.create_timer(0.01, self._tick, callback_group=_cg)
 
         self.get_logger().info("SimDriverNode gotowy (2 jointy: joint_z / joint_y).")
 
@@ -103,11 +104,11 @@ class SimDriverNode(Node):
         self._sweep_cancel.set()
         self._sweep_cancel = threading.Event()
         cancel = self._sweep_cancel
+        done_event = threading.Event()
 
-        self._pub_sweep_active.publish(Bool(data=True))
         threading.Thread(
             target=self._conical_scan_thread,
-            args=(range_deg, step_deg, tolerance_deg, cancel),
+            args=(range_deg, step_deg, tolerance_deg, cancel, done_event),
             daemon=True,
         ).start()
 
@@ -117,6 +118,9 @@ class SimDriverNode(Node):
             f"Skan ciągły: Y=±{range_deg:.0f}°, Z=±90°, "
             f"krok Z {step_deg:.1f}°, {n_z + 1} pasów, sonar 20 Hz"
         )
+        while not done_event.wait(timeout=0.5):
+            if not rclpy.ok():
+                break
         return response
 
     # --- conical scan thread ---
@@ -128,10 +132,7 @@ class SimDriverNode(Node):
             return f"{s}s"
         return f"{s // 60}m {s % 60:02d}s"
 
-    def _sweep_done(self) -> None:
-        self._pub_sweep_active.publish(Bool(data=False))
-
-    def _conical_scan_thread(self, range_deg, step_deg, tolerance_deg, cancel):
+    def _conical_scan_thread(self, range_deg, step_deg, tolerance_deg, cancel, done_event):
         max_vel       = self.get_parameter("max_vel_rad_s").value
         max_acc       = self.get_parameter("max_acc_rad_s2").value
         sonar_rate_hz = self.get_parameter("sonar_rate_hz").value
@@ -170,50 +171,45 @@ class SimDriverNode(Node):
         )
         scan_start = time.monotonic()
 
-        def abort():
-            self.get_logger().info("Skan przerwany.")
-            self._y_sweep_vel = None
-            self._sweep_done()
-
-        # Prepozycja Y na początek pierwszego pasa
-        self.goal[1] = math.radians(-range_deg)
-        if not wait_arrived(1):
-            abort()
-            return
-
-        for iz, z_deg in enumerate(z_angles):
-            # Przesuń Z do pozycji pasa — sonar zbiera dane podczas ruchu
-            self.goal[0] = math.radians(z_deg)
-            if not wait_arrived(0):
-                abort()
-                return
-
-            # Snake: parzyste pasy +range, nieparzyste -range
-            y_end     = range_deg if iz % 2 == 0 else -range_deg
-            elapsed   = time.monotonic() - scan_start
-            remaining = est_total - elapsed
-            self.get_logger().info(
-                f"Pas {iz + 1:3d}/{n_total} ({100 * (iz + 1) // n_total:3d}%) "
-                f"| Z={z_deg:+.1f}° | Y→{y_end:+.0f}° "
-                f"| pozostało ~{self._fmt_time(max(0.0, remaining))}"
-            )
-
-            self.goal[1] = math.radians(y_end)
+        try:
+            # Prepozycja Y na początek pierwszego pasa
+            self.goal[1] = math.radians(-range_deg)
             if not wait_arrived(1):
-                abort()
+                self.get_logger().info("Skan przerwany.")
                 return
 
-        elapsed = time.monotonic() - scan_start
-        self.get_logger().info(
-            f"Skan zakończony. Czas: {self._fmt_time(elapsed)}. Powrót do 0°."
-        )
-        self._y_sweep_vel = None
-        self.goal[0] = 0.0
-        self.goal[1] = 0.0
-        wait_arrived(0)
-        wait_arrived(1)
-        self.get_logger().info("Powrót zakończony.")
-        self._sweep_done()
+            for iz, z_deg in enumerate(z_angles):
+                self.goal[0] = math.radians(z_deg)
+                if not wait_arrived(0):
+                    self.get_logger().info("Skan przerwany.")
+                    return
+
+                y_end     = range_deg if iz % 2 == 0 else -range_deg
+                elapsed   = time.monotonic() - scan_start
+                remaining = est_total - elapsed
+                self.get_logger().info(
+                    f"Pas {iz + 1:3d}/{n_total} ({100 * (iz + 1) // n_total:3d}%) "
+                    f"| Z={z_deg:+.1f}° | Y→{y_end:+.0f}° "
+                    f"| pozostało ~{self._fmt_time(max(0.0, remaining))}"
+                )
+
+                self.goal[1] = math.radians(y_end)
+                if not wait_arrived(1):
+                    self.get_logger().info("Skan przerwany.")
+                    return
+
+            elapsed = time.monotonic() - scan_start
+            self.get_logger().info(
+                f"Skan zakończony. Czas: {self._fmt_time(elapsed)}. Powrót do 0°."
+            )
+            self.goal[0] = 0.0
+            self.goal[1] = 0.0
+            wait_arrived(0)
+            wait_arrived(1)
+            self.get_logger().info("Powrót zakończony.")
+        finally:
+            self._y_sweep_vel = None
+            done_event.set()
 
     # --- timer 100 Hz ---
 
@@ -253,8 +249,10 @@ class SimDriverNode(Node):
 def main():
     rclpy.init()
     node = SimDriverNode()
+    executor = rclpy.executors.MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:

@@ -61,7 +61,8 @@ class MissionSupervisorNode(Node):
 
         # Parametry — scenariusz 1
         self.declare_parameter("waypoints_file",    os.path.join(_PKG_SHARE, "waypoints.csv"))
-        self.declare_parameter("boat_buffer_size",  5)   # ile waypointów z góry w kolejce Isaaca
+        self.declare_parameter("boat_buffer_size",    5)
+        self.declare_parameter("boat_arrived_timeout", 120.0)  # watchdog [s]
         self.declare_parameter("stabilize_time",    0.5)
         self.declare_parameter("n_readings",        1)
         self.declare_parameter("progress_interval", 0)  # 0 = tryb procentowy (co 5%)
@@ -81,11 +82,12 @@ class MissionSupervisorNode(Node):
         self._wp_idx       = 0    # sweep: aktualny waypoint
         self._wp_sent      = 0    # baseline: ile waypointów wysłano do kolejki Isaaca
         self._wp_completed = 0    # baseline: ile waypointów łódka ukończyła
-        self._readings     = 0
-        self._sweep_active = False
-        self._boat_arrived = False
-        self._t_enter      = 0.0
-        self._t_start      = 0.0
+        self._readings      = 0
+        self._sweep_future  = None
+        self._boat_arrived  = False
+        self._t_enter        = 0.0
+        self._t_start        = 0.0
+        self._t_last_arrived = 0.0
 
         # Serwisy klienckie
         self._cli_boat     = self.create_client(SetBoatPose, "/set_boat_pose")
@@ -99,9 +101,8 @@ class MissionSupervisorNode(Node):
         self.create_service(Trigger, "/mission/abort",          self._srv_abort)
 
         # Topiki
-        self.create_subscription(LaserScan, "/sim/sonar",      self._cb_sonar,        10)
-        self.create_subscription(Bool,      "/sweep_active",   self._cb_sweep_active, 10)
-        self.create_subscription(Bool,      "/boat_arrived",   self._cb_boat_arrived, 10)
+        self.create_subscription(LaserScan, "/sim/sonar",    self._cb_sonar,        10)
+        self.create_subscription(Bool,      "/boat_arrived", self._cb_boat_arrived, 10)
         self._pub_status = self.create_publisher(String, "/mission/status",    10)
         self._pub_prefix = self.create_publisher(String, "/scan_save_prefix", 10)
 
@@ -178,8 +179,10 @@ class MissionSupervisorNode(Node):
             response.message = "Brak aktywnej misji."
             return response
 
-        msg = f"Misja przerwana na waypoincie {self._wp_idx}/{len(self._waypoints)}."
+        progress = self._wp_completed if self._scenario == "baseline" else self._wp_idx
+        msg = f"Misja przerwana na waypoincie {progress}/{len(self._waypoints)}."
         self.get_logger().warn(msg)
+        self._sweep_future = None
         self._set_state(State.IDLE)
         response.success = True
         response.message = msg
@@ -191,10 +194,8 @@ class MissionSupervisorNode(Node):
         if self._state == State.WAITING_SONAR:
             self._readings += 1
 
-    def _cb_sweep_active(self, msg: Bool) -> None:
-        self._sweep_active = msg.data
-
     def _cb_boat_arrived(self, _msg: Bool) -> None:
+        self._t_last_arrived = time.monotonic()
         if self._state == State.CRUISING:
             self._wp_completed += 1
             self._log_progress(self._wp_completed)
@@ -212,7 +213,12 @@ class MissionSupervisorNode(Node):
             return
 
         if self._state == State.CRUISING:
-            pass  # postęp i uzupełnianie kolejki obsługiwane w _cb_boat_arrived
+            timeout = self.get_parameter("boat_arrived_timeout").value
+            if (timeout > 0 and self._t_last_arrived > 0 and
+                    time.monotonic() - self._t_last_arrived > timeout):
+                self.get_logger().warn(
+                    f"Watchdog: brak boat_arrived przez {timeout:.0f}s — kończę misję.")
+                self._do_done()
 
         elif self._state == State.SEND_GOAL:
             self._do_send_goal()
@@ -235,7 +241,8 @@ class MissionSupervisorNode(Node):
             self._do_sweep_start()
 
         elif self._state == State.SWEEPING:
-            if not self._sweep_active:
+            if self._sweep_future is not None and self._sweep_future.done():
+                self._sweep_future = None
                 self._set_state(State.NEXT)
 
         elif self._state == State.NEXT:
@@ -283,8 +290,7 @@ class MissionSupervisorNode(Node):
         req.range_deg     = float(self.get_parameter("sweep_range_deg").value)
         req.step_deg      = float(self.get_parameter("sweep_step_deg").value)
         req.tolerance_deg = float(self.get_parameter("sweep_tolerance_deg").value)
-        self._sweep_active = True   # zakładamy True, poczekamy na False
-        self._cli_sweep.call_async(req)
+        self._sweep_future = self._cli_sweep.call_async(req)
         self._set_state(State.SWEEPING)
 
     def _do_next(self) -> None:

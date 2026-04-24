@@ -437,7 +437,7 @@ def main():
 
     add_lake(stage)
     add_ground_plane(stage)
-    add_waypoint_markers(stage, WAYPOINTS_CSV)
+    # add_waypoint_markers(stage, WAYPOINTS_CSV)
 
     robot = world.scene.add(Articulation(prim_path=robot_prim_path))
 

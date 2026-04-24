@@ -41,7 +41,7 @@ LAKE_OBJ   = MESHES_DIR / "big_lake_simp.obj"
 
 # Transformacja matching isaac_sim.py (LAKE_TILES_ROTATE_X = 90°, LAKE_SCALE = 1, LAKE_TRANSLATE_Z = -30)
 LAKE_SCALE       = 1.0
-LAKE_TRANSLATE_Z = -30.0   # world_z = LAKE_SCALE * obj_y + LAKE_TRANSLATE_Z
+LAKE_TRANSLATE_Z = -3.0    # world_z = LAKE_SCALE * obj_y + LAKE_TRANSLATE_Z
 
 
 def parse_args():
@@ -60,18 +60,18 @@ def parse_args():
                    help="Generuje waypoints dla scenariusza sweep (domyślny output: waypoints_sweep.csv)")
     p.add_argument("--boat-z",  type=float, default=0.0,
                    help="Wysokość łódki w świecie Isaac Sim [m] (domyślnie 0.0)")
-    p.add_argument("--margin", type=float, default=1.0,
-                   help="Margines od brzegu jeziora [m] (domyślnie 1.0). "
-                        "Eliminuje płytkie waypoints przy skraju.")
+    p.add_argument("--margin", type=float, default=0.0,
+                   help="Margines od brzegu jeziora [m] (domyślnie 0.0). "
+                        "Przy --all-points warto ustawić >0 by uniknąć płytkich waypointów.")
     p.add_argument("--time",  type=float, default=None,
                    help="Docelowy czas trwania misji [min]. Zastępuje --step i --n-grid; "
                         "wymaga --speed.")
     p.add_argument("--speed", type=float, default=None,
                    help="Prędkość łódki [m/s]. Wymagane gdy podano --time.")
+    p.add_argument("--all-points", action="store_true",
+                   help="Gęsta siatka wewnątrz jeziora (domyślnie: przecięcia kolumn z obrysem).")
     p.add_argument("--step-tol", type=float, default=0.5,
                    help="Tolerancja bisection [%%] (domyślnie 0.5)")
-    p.add_argument("--preview", action="store_true",
-                   help="Pokaż wykres konturu i waypointów (wymaga matplotlib)")
     return p.parse_args()
 
 
@@ -157,10 +157,11 @@ def get_contour_polygon(mesh, water_y: float, grid_size: int = 1024):
     return lake
 
 
-def generate_grid(polygon, step_obj: float):
+def generate_grid(polygon, step_obj: float, turns_only: bool = False):
     """Siatka punktów wewnątrz konturu, serpentyna wzdłuż X.
 
-    step_obj: krok w przestrzeni OBJ (= step_m / LAKE_SCALE)
+    step_obj:   krok w przestrzeni OBJ (= step_m / LAKE_SCALE)
+    turns_only: zachowaj tylko punkty wejścia/wyjścia z jeziora na każdej kolumnie
     Zwraca listę (obj_x, obj_z).
     """
     from shapely.geometry import Point
@@ -174,12 +175,76 @@ def generate_grid(polygon, step_obj: float):
 
     waypoints = []
     for col_idx, x in enumerate(xs):
-        col = [Point(x, z) for z in zs if polygon.contains(Point(x, z))]
+        if turns_only:
+            z_in = [i for i, z in enumerate(zs) if polygon.contains(Point(x, z))]
+            if not z_in:
+                continue
+            ep = []
+            run_start = z_in[0]
+            prev = z_in[0]
+            for idx in z_in[1:]:
+                if idx != prev + 1:
+                    ep.append(run_start)
+                    if run_start != prev:
+                        ep.append(prev)
+                    run_start = idx
+                prev = idx
+            ep.append(run_start)
+            if run_start != prev:
+                ep.append(prev)
+            col = [Point(x, zs[i]) for i in ep]
+        else:
+            col = [Point(x, z) for z in zs if polygon.contains(Point(x, z))]
+
         if col_idx % 2 == 1:
             col = col[::-1]   # serpentyna — co druga kolumna odwrócona
         waypoints.extend(col)
 
     print(f"Waypointów wewnątrz konturu: {len(waypoints):,}")
+    return waypoints
+
+
+def generate_boundary_grid(polygon, step_obj: float):
+    """Waypoints jako przecięcia kolumn z obrysem jeziora.
+
+    Każda kolumna (stałe X) daje punkty dokładnie na granicy konturu.
+    Ścieżka: serpentyna po kolumnach, przejścia między kolumnami po prostej.
+    """
+    from shapely.geometry import LineString, Point
+
+    minx, minz, maxx, maxz = polygon.bounds
+    xs = np.arange(minx + step_obj / 2, maxx, step_obj)
+
+    print(f"\nSiatka w przestrzeni OBJ: {len(xs)} kolumn")
+
+    waypoints = []
+    for col_idx, x in enumerate(xs):
+        col_line = LineString([(x, minz - 1.0), (x, maxz + 1.0)])
+        isect = polygon.intersection(col_line)
+
+        if isect.is_empty or isect.geom_type == 'Point':
+            continue
+
+        if isect.geom_type == 'LineString':
+            segs = [isect]
+        elif isect.geom_type == 'MultiLineString':
+            segs = sorted(isect.geoms, key=lambda s: min(c[1] for c in s.coords))
+        else:
+            continue
+
+        seg_endpoints = []
+        for seg in segs:
+            coords = sorted(seg.coords, key=lambda c: c[1])
+            seg_endpoints.append((Point(coords[0]), Point(coords[-1])))
+
+        if col_idx % 2 == 1:
+            seg_endpoints = [(e, s) for s, e in reversed(seg_endpoints)]
+
+        for start, end in seg_endpoints:
+            waypoints.append(start)
+            waypoints.append(end)
+
+    print(f"Waypointów: {len(waypoints):,}")
     return waypoints
 
 
@@ -194,11 +259,14 @@ def path_length_world(waypoints) -> float:
 
 
 def find_step_for_time(polygon, target_time_s: float, boat_speed: float,
-                       tol_frac: float = 0.005) -> tuple[float, list]:
+                       tol_frac: float = 0.005,
+                       all_points: bool = False) -> tuple[float, list]:
     """Bisection: szuka step_obj dającego target_dist = target_time_s * boat_speed."""
     target_dist = target_time_s * boat_speed
     print(f"\nBisection: cel={target_dist:.1f} m  ({target_time_s/60:.1f} min × {boat_speed} m/s)")
     print(f"Tolerancja: {tol_frac*100:.2f}%")
+
+    grid_fn = generate_grid if all_points else generate_boundary_grid
 
     minx, minz, maxx, maxz = polygon.bounds
     step_lo = 0.05 / LAKE_SCALE                           # ~5 cm — dolna granica
@@ -210,7 +278,7 @@ def find_step_for_time(polygon, target_time_s: float, boat_speed: float,
 
     for it in range(60):
         step_mid = (step_lo + step_hi) / 2.0
-        wps      = generate_grid(polygon, step_mid)
+        wps      = grid_fn(polygon, step_mid)
         if not wps:
             step_hi = step_mid
             continue
@@ -229,9 +297,9 @@ def find_step_for_time(polygon, target_time_s: float, boat_speed: float,
             break
 
         if dist > target_dist:
-            step_lo = step_mid   # trasa za długa → zwiększ step (mniej rzędów)
+            step_lo = step_mid
         else:
-            step_hi = step_mid   # trasa za krótka → zmniejsz step (więcej rzędów)
+            step_hi = step_mid
 
     print(f"\nWynik: step={best_step*LAKE_SCALE:.4f} m  "
           f"dist={path_length_world(best_wps):.1f} m  "
@@ -257,48 +325,45 @@ def save_csv(waypoints, boat_z: float, output: pathlib.Path):
     print(f"\nZapisano {len(waypoints)} waypointów → {output}")
 
 
-def preview(polygon, waypoints, step_obj: float):
-    """Wykres konturu jeziora i waypointów."""
+def save_preview(polygon, waypoints, output_csv: pathlib.Path):
+    """Zapisuje widok z góry (PNG) obok pliku CSV."""
     try:
         import matplotlib
-        matplotlib.use("TkAgg")   # przełącz z Agg (użytego do konturu) na interaktywny
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
-        print("WARN: brak matplotlib, pomijam --preview", file=sys.stderr)
+        print("WARN: brak matplotlib, pomijam zapis PNG", file=sys.stderr)
         return
+
+    from shapely.geometry import MultiPolygon
 
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    # Kontur jeziora
-    from shapely.geometry import MultiPolygon
-    if isinstance(polygon, MultiPolygon):
-        for geom in polygon.geoms:
-            xs, zs = geom.exterior.xy
-            ax.fill(xs, zs, alpha=0.2, color="steelblue")
-            ax.plot(xs, zs, color="steelblue", linewidth=1)
-    else:
-        xs, zs = polygon.exterior.xy
+    geoms = list(polygon.geoms) if isinstance(polygon, MultiPolygon) else [polygon]
+    for geom in geoms:
+        xs, zs = geom.exterior.xy
         ax.fill(xs, zs, alpha=0.2, color="steelblue")
         ax.plot(xs, zs, color="steelblue", linewidth=1)
 
-    # Waypoints
     if waypoints:
         wx = [p.x for p in waypoints]
         wz = [p.y for p in waypoints]
-        ax.scatter(wx, wz, s=2, color="red", zorder=5, label=f"waypoints (n={len(waypoints)})")
-        # Trasa serpentynowa — pierwsze 200 punktów
-        n_show = min(200, len(waypoints))
-        ax.plot([p.x for p in waypoints[:n_show]],
-                [p.y for p in waypoints[:n_show]],
-                color="orange", linewidth=0.5, alpha=0.7, label=f"trasa (pierwsze {n_show})")
+        ax.plot(wx, wz, color="orange", linewidth=0.8, alpha=0.8, zorder=4, label="trasa")
+        ax.scatter(wx, wz, s=10, color="red", zorder=5, label=f"waypoints (n={len(waypoints)})")
+        ax.scatter([wx[0]], [wz[0]], s=60, color="green",  zorder=6, label="start")
+        ax.scatter([wx[-1]], [wz[-1]], s=60, color="black", zorder=6, label="koniec")
 
-    ax.set_xlabel("OBJ X")
-    ax.set_ylabel("OBJ Z")
-    ax.set_title(f"Kontur jeziora + waypoints (krok OBJ = {step_obj:.3f})")
+    ax.set_xlabel("OBJ X [m]")
+    ax.set_ylabel("OBJ Z [m]")
+    ax.set_title(output_csv.stem)
     ax.set_aspect("equal")
-    ax.legend()
+    ax.legend(fontsize=8)
     plt.tight_layout()
-    plt.show()
+
+    png_path = output_csv.with_suffix(".png")
+    fig.savefig(png_path, dpi=150)
+    plt.close(fig)
+    print(f"Podgląd zapisany → {png_path}")
 
 
 def main():
@@ -328,7 +393,7 @@ def main():
 
     # Poziom wody
     if args.water_y == "auto":
-        water_y = float(mesh.bounds[1][1])   # max Y
+        water_y = -LAKE_TRANSLATE_Z / LAKE_SCALE   # world_z=0 → obj_y
         print(f"\nPoziom wody (auto): Y = {water_y:.4f}")
     else:
         try:
@@ -353,17 +418,20 @@ def main():
             print("BŁĄD: --time wymaga --speed", file=sys.stderr)
             sys.exit(1)
         tol_frac = args.step_tol / 100.0
-        _, waypoints = find_step_for_time(polygon, args.time * 60.0, args.speed, tol_frac)
+        _, waypoints = find_step_for_time(polygon, args.time * 60.0, args.speed, tol_frac,
+                                          all_points=args.all_points)
     elif args.n_grid is not None:
         minx, minz, maxx, maxz = polygon.bounds
         step_m   = min((maxx - minx), (maxz - minz)) * LAKE_SCALE / args.n_grid
         step_obj = step_m / LAKE_SCALE
         print(f"Tryb --n-grid {args.n_grid}: krok {step_m:.2f} m = {step_obj:.4f} OBJ")
-        waypoints = generate_grid(polygon, step_obj)
+        grid_fn  = generate_grid if args.all_points else generate_boundary_grid
+        waypoints = grid_fn(polygon, step_obj)
     else:
         step_obj = args.step / LAKE_SCALE
         print(f"Krok siatki: {args.step} m (Isaac Sim) = {step_obj:.4f} (OBJ)")
-        waypoints = generate_grid(polygon, step_obj)
+        grid_fn  = generate_grid if args.all_points else generate_boundary_grid
+        waypoints = grid_fn(polygon, step_obj)
 
     if not waypoints:
         print("BŁĄD: brak waypointów — sprawdź --water-y i --step", file=sys.stderr)
@@ -375,9 +443,7 @@ def main():
     print(f"Gęstość: 1 waypoint / {area_world/len(waypoints):.1f} m²")
 
     save_csv(waypoints, args.boat_z, args.output)
-
-    if args.preview:
-        preview(polygon, waypoints, step_obj)
+    save_preview(polygon, waypoints, args.output)
 
 
 if __name__ == "__main__":
