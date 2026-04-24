@@ -1,0 +1,5 @@
+sweep: /home/jakub-chmielewski/mani_ros/analysis/clouds/sweep_x1_wp2_r90s2_14.7min_20260425_004158.csv
+baseline: /home/jakub-chmielewski/mani_ros/analysis/clouds/scan_20260425_001526.csv
+mesh: /home/jakub-chmielewski/mani_ros/src/xm540_bringup/meshes/big_lake_simp.obj
+samples: 50000
+radii: [0.1, 0.25, 0.5, 1.0, 3.0, 5.0, 10.0]

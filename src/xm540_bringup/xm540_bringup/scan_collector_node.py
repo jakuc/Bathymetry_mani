@@ -202,6 +202,9 @@ class ScanCollectorNode(Node):
 
             self._points.append((wx, wy, wz, d))
             self._meta.append({
+                "wx":           wx,
+                "wy":           wy,
+                "wz":           wz,
                 "scan_stamp":   scan_stamp_sec,
                 "callback_now": now_sec,
                 "tf_stamp":     tf_stamp_sec,
@@ -216,9 +219,6 @@ class ScanCollectorNode(Node):
                 "sonar_qy":     ro.y,
                 "sonar_qz":     ro.z,
                 "sonar_qw":     ro.w,
-                "wx":           wx,
-                "wy":           wy,
-                "wz":           wz,
                 **{f"j_{k}": v for k, v in entry["joints_snapshot"].items()},
                 "js_stamp":     entry["js_stamp"],
             })
