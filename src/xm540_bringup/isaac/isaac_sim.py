@@ -82,7 +82,7 @@ class IsaacRosNode(Node):
         self.cmd_z = 0.0
         self.cmd_y = 0.0
         self.boat_queue: deque[tuple[float, float]] = deque()
-        self.boat_vel:   list[float] = [0.0, 0.0]   # [vx, vy] zadane do jointów
+        self._boat_anchor:   tuple[float, float] | None = None
         self._wp_target_prev: tuple[float, float] | None = None
         self._wp_t_enter:   float = 0.0
         self._wp_timeout:   float = 0.0
@@ -118,7 +118,6 @@ class IsaacRosNode(Node):
                 np.array([request.x, request.y]),
                 joint_indices=np.array([self.idx_boat_x, self.idx_boat_y]),
             )
-            self.boat_vel = [0.0, 0.0]
             self.get_logger().info(f"Teleport: x={request.x:.1f} y={request.y:.1f}")
         response.success = True
         return response
@@ -133,15 +132,21 @@ class IsaacRosNode(Node):
         response.success = True
         return response
 
-    def update_boat_velocity(self, pos_x: float, pos_y: float) -> None:
-        """Liczy prędkości jointów łódki w kierunku aktualnego waypointu.
+    def compute_next_boat_pos(self, pos_x: float, pos_y: float,
+                              dt: float) -> tuple[float, float]:
+        """Zwraca nową pozycję łódki do ustawienia w tej iteracji.
 
-        Po dotarciu: publikuje /boat_arrived, usuwa waypoint z kolejki i płynie
-        do następnego bez zatrzymywania. Jeśli kolejka pusta — stoi.
+        Przesuwa łódkę o speed*dt w kierunku celu, bez przekroczenia.
+        Po dotarciu: publikuje /boat_arrived i usuwa waypoint z kolejki.
+        Jeśli kolejka pusta — zwraca aktualną pozycję (stój).
         """
         if not self.boat_queue:
-            self.boat_vel = [0.0, 0.0]
-            return
+            if self._boat_anchor is None:
+                self._boat_anchor = (pos_x, pos_y)
+            return self._boat_anchor
+
+        self._boat_anchor = None
+
         target_x, target_y = self.boat_queue[0]
         dx   = target_x - pos_x
         dy   = target_y - pos_y
@@ -165,9 +170,12 @@ class IsaacRosNode(Node):
             self.boat_queue.popleft()
             self._wp_target_prev = None
             self._pub_arrived.publish(Bool(data=True))
-            return
+            self._boat_anchor = (target_x, target_y)
+            return self._boat_anchor
+
         speed = self.get_parameter("boat_speed").value
-        self.boat_vel = [speed * dx / dist, speed * dy / dist]
+        step  = min(speed * dt, dist)
+        return (pos_x + step * dx / dist, pos_y + step * dy / dist)
 
     def _cb_z(self, msg: Float64): self.cmd_z = msg.data
     def _cb_y(self, msg: Float64): self.cmd_y = msg.data
@@ -482,20 +490,16 @@ def main():
 
         rclpy.spin_once(ros_node, timeout_sec=0.0)
 
-        # Odczytaj aktualną pozycję łódki z fizyki i zaktualizuj prędkości
+        # Odczytaj aktualną pozycję wszystkich DOF
         actual = robot.get_joint_positions()
-        ros_node.update_boat_velocity(float(actual[idx_boat_x]), float(actual[idx_boat_y]))
-
-        # Prędkości łódki — tylko jointy łódki, żeby nie nadpisywać pozycji manipulatora
-        robot.set_joint_velocities(
-            np.array([ros_node.boat_vel[0], ros_node.boat_vel[1]]),
-            joint_indices=np.array([idx_boat_x, idx_boat_y]),
+        new_bx, new_by = ros_node.compute_next_boat_pos(
+            float(actual[idx_boat_x]), float(actual[idx_boat_y]), step_dt
         )
 
-        # Pozycje manipulatora — tylko jointy manipulatora, żeby nie resetować pozycji łódki
+        # Ustaw pozycje wszystkich 4 DOF — łódka kinematycznie, manipulator z komend ROS
         robot.set_joint_positions(
-            np.array([ros_node.cmd_z, ros_node.cmd_y]),
-            joint_indices=np.array([idx_z, idx_y]),
+            np.array([new_bx, new_by, ros_node.cmd_z, ros_node.cmd_y]),
+            joint_indices=np.array([idx_boat_x, idx_boat_y, idx_z, idx_y]),
         )
 
         # Jeden timestamp dla wszystkich wiadomości tej iteracji fizyki

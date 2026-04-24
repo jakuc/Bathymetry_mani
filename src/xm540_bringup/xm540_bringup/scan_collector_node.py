@@ -39,7 +39,7 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import JointState, LaserScan, PointCloud2, PointField
-from std_msgs.msg import Header
+from std_msgs.msg import Header, String
 from std_srvs.srv import Empty
 import tf2_ros
 import tf2_geometry_msgs  # noqa: F401 – rejestruje obsługę PointStamped w tf2
@@ -67,8 +67,11 @@ class ScanCollectorNode(Node):
         self._tf_buffer   = tf2_ros.Buffer(cache_time=Duration(seconds=10.0))
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
-        self.create_subscription(LaserScan,   "/sim/sonar",    self._cb_sonar,  10)
-        self.create_subscription(JointState,  "/joint_states", self._cb_joints, 10)
+        self.create_subscription(LaserScan,   "/sim/sonar",        self._cb_sonar,  10)
+        self.create_subscription(JointState,  "/joint_states",     self._cb_joints, 10)
+        self.create_subscription(String,      "/scan_save_prefix", self._cb_prefix, 10)
+
+        self._save_prefix: str = ""
 
         self._pub = self.create_publisher(PointCloud2, "/scan_cloud", 10)
         self.create_service(Empty, "~/clear",    self._srv_clear)
@@ -98,6 +101,11 @@ class ScanCollectorNode(Node):
             f"debug_tf: {self._debug_tf}, "
             f"tf_timeout: {self._tf_timeout}s, pending_max_age: {self._pending_max_age}s"
         )
+
+    # --------------------------------------------------------------- prefix
+
+    def _cb_prefix(self, msg: String) -> None:
+        self._save_prefix = msg.data
 
     # --------------------------------------------------------------- joints
 
@@ -251,7 +259,8 @@ class ScanCollectorNode(Node):
 
         ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_dir = os.environ.get("ROS_LOG_DIR", os.path.expanduser("~/.ros/log"))
-        path    = os.path.join(log_dir, f"scan_{ts}.csv")
+        prefix  = self._save_prefix if self._save_prefix else "scan"
+        path    = os.path.join(log_dir, f"{prefix}_{ts}.csv")
 
         fieldnames = list(self._meta[0].keys())
         with open(path, "w", newline="") as f:

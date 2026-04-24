@@ -15,32 +15,31 @@ from std_msgs.msg import Bool, Float64
 from sensor_msgs.msg import JointState
 from xm540_interfaces.srv import SetOrientation, StartSweep
 
-LIMIT           = math.pi / 2    # ±90° — fizyczny limit sprzętu
-DEFAULT_MAX_VEL     = 2.69               # rad/s
-DEFAULT_MAX_ACC     = 10.0               # rad/s²
-DEFAULT_VEL_STOPPED = math.radians(2.0) # rad/s
+LIMIT             = math.pi / 2  # ±90° — fizyczny limit sprzętu
+DEFAULT_MAX_VEL   = 2.69          # rad/s
+DEFAULT_MAX_ACC   = 10.0          # rad/s²
+DEFAULT_SONAR_HZ  = 20.0          # Hz
 
 
 class SimDriverNode(Node):
     def __init__(self):
         super().__init__("sim_driver_node")
 
-        # Stan obu jointów: [joint_z, joint_y] – aktualizowany z /sim/encoders (fizyka)
-        self.current  = [0.0, 0.0]
-        self.velocity = [0.0, 0.0]   # estymowana prędkość z różnicy enkoderów [rad/s]
-        self.goal     = [0.0, 0.0]
+        # Stan obu jointów: [joint_z, joint_y] – aktualizowany z /joint_states (fizyka)
+        self.current = [0.0, 0.0]
+        self.goal    = [0.0, 0.0]
 
         # Wewnętrzny profil trapezoidalny – pozycja i prędkość komendy do Isaac Sim
         self._cmd     = [0.0, 0.0]
         self._cmd_vel = [0.0, 0.0]
 
-        # Do estymacji prędkości z enkoderów
-        self._last_enc_stamp = 0.0
+        # Prędkość Y podczas sweep (None = używaj max_vel_rad_s)
+        self._y_sweep_vel: float | None = None
 
-        self.declare_parameter("max_vel_rad_s",    DEFAULT_MAX_VEL)
-        self.declare_parameter("max_acc_rad_s2",   DEFAULT_MAX_ACC)
-        self.declare_parameter("vel_stopped_rad_s", DEFAULT_VEL_STOPPED)
-        # Anulowanie bieżącego sweepa
+        self.declare_parameter("max_vel_rad_s",  DEFAULT_MAX_VEL)
+        self.declare_parameter("max_acc_rad_s2", DEFAULT_MAX_ACC)
+        self.declare_parameter("sonar_rate_hz",  DEFAULT_SONAR_HZ)
+
         self._sweep_cancel = threading.Event()
 
         self.pub_gz_y = self.create_publisher(Float64, "/xm540_joint/cmd_pos",   10)
@@ -64,21 +63,11 @@ class SimDriverNode(Node):
         self.goal[1] = math.radians(msg.data)
 
     def _cb_encoders(self, msg: JointState) -> None:
-        """Odbiera /joint_states z isaac_sim i aktualizuje stan wewnętrzny (dla profilu i sweep)."""
-        stamp_sec = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        dt = stamp_sec - self._last_enc_stamp
-
-        prev = list(self.current)
         for name, pos in zip(msg.name, msg.position):
             if name == "xm540_joint_z":
                 self.current[0] = pos
             elif name == "xm540_joint":
                 self.current[1] = pos
-
-        if self._last_enc_stamp > 0.0 and 0.0 < dt < 0.5:
-            self.velocity[0] = (self.current[0] - prev[0]) / dt
-            self.velocity[1] = (self.current[1] - prev[1]) / dt
-        self._last_enc_stamp = stamp_sec
 
     # --- serwisy ---
 
@@ -123,11 +112,10 @@ class SimDriverNode(Node):
         ).start()
 
         n_z = int(round(180.0 / step_deg))
-        n_y = int(round(2 * range_deg / step_deg))
         response.success = True
         response.message = (
-            f"Skan stożkowy: Y=±{range_deg:.0f}°, Z=±90°, "
-            f"krok {step_deg:.1f}°, {n_z} pasów Y × {n_y} kroków, 20 Hz"
+            f"Skan ciągły: Y=±{range_deg:.0f}°, Z=±90°, "
+            f"krok Z {step_deg:.1f}°, {n_z + 1} pasów, sonar 20 Hz"
         )
         return response
 
@@ -144,103 +132,86 @@ class SimDriverNode(Node):
         self._pub_sweep_active.publish(Bool(data=False))
 
     def _conical_scan_thread(self, range_deg, step_deg, tolerance_deg, cancel):
-        max_vel     = self.get_parameter("max_vel_rad_s").value
-        max_acc     = self.get_parameter("max_acc_rad_s2").value
-        vel_stopped = self.get_parameter("vel_stopped_rad_s").value
-        tol_rad     = math.radians(tolerance_deg)
+        max_vel       = self.get_parameter("max_vel_rad_s").value
+        max_acc       = self.get_parameter("max_acc_rad_s2").value
+        sonar_rate_hz = self.get_parameter("sonar_rate_hz").value
+        tol_rad       = math.radians(tolerance_deg)
 
-        # Pozycje Z: od -90° do +90°, krok step_deg
-        n_z      = int(round(180.0 / step_deg))
-        z_angles = [-90.0 + i * step_deg for i in range(n_z + 1)]
+        # Prędkość Y: step_deg na jeden okres sonara
+        sweep_vel = min(math.radians(step_deg) * sonar_rate_hz, max_vel)
+        self._y_sweep_vel = sweep_vel
 
-        # Pozycje Y: od -range do +range, krok step_deg
-        n_y        = int(round(range_deg / step_deg))
-        y_forward  = [i * step_deg for i in range(-n_y, n_y + 1)]
-        y_backward = list(reversed(y_forward))
+        def wait_arrived(idx) -> bool:
+            """Czeka aż profil _cmd[idx] dotrze do celu. Zwraca False jeśli anulowano."""
+            while True:
+                if cancel.is_set():
+                    return False
+                if abs(self._cmd[idx] - self.goal[idx]) <= tol_rad:
+                    return True
+                time.sleep(0.002)
 
-        def trap_time(deg: float) -> float:
-            d      = math.radians(deg)
-            d_crit = max_vel * max_vel / (2.0 * max_acc)
+        def trap_time(deg: float, v_max: float) -> float:
+            d      = math.radians(abs(deg))
+            d_crit = v_max * v_max / (2.0 * max_acc)
             if d <= d_crit:
                 return 2.0 * math.sqrt(2.0 * d / max_acc)
-            return max_vel / max_acc + d / max_vel
+            return v_max / max_acc + d / v_max
 
-        steps_per_strip  = len(y_forward)
-        y_time_per_strip = steps_per_strip * trap_time(step_deg)
-        z_step_time      = trap_time(step_deg)
-        n_total          = len(z_angles)
-        est_total        = n_total * y_time_per_strip + (n_total - 1) * z_step_time
+        z_angles  = [-90.0 + i * step_deg for i in range(int(round(180.0 / step_deg)) + 1)]
+        n_total   = len(z_angles)
+        est_total = (n_total * trap_time(2 * range_deg, sweep_vel)
+                     + (n_total - 1) * trap_time(step_deg, max_vel))
 
         self.get_logger().info(
-            f"Skan stożkowy start: Y=±{range_deg:.0f}°, Z=±90°, "
-            f"krok {step_deg:.1f}°, {n_total} pasów × {steps_per_strip} kroków. "
+            f"Skan ciągły start: Y=±{range_deg:.0f}°, Z=±90°, "
+            f"krok Z {step_deg:.1f}°, {n_total} pasów, "
+            f"prędkość Y {math.degrees(sweep_vel):.1f}°/s. "
             f"Szacowany czas: {self._fmt_time(est_total)}."
         )
         scan_start = time.monotonic()
 
+        def abort():
+            self.get_logger().info("Skan przerwany.")
+            self._y_sweep_vel = None
+            self._sweep_done()
+
+        # Prepozycja Y na początek pierwszego pasa
+        self.goal[1] = math.radians(-range_deg)
+        if not wait_arrived(1):
+            abort()
+            return
+
         for iz, z_deg in enumerate(z_angles):
-            if cancel.is_set():
-                self.get_logger().info("Skan przerwany.")
-                self._sweep_done()
+            # Przesuń Z do pozycji pasa — sonar zbiera dane podczas ruchu
+            self.goal[0] = math.radians(z_deg)
+            if not wait_arrived(0):
+                abort()
                 return
 
-            # Przesuń Z i poczekaj aż joint stoi w tolerancji (pozycja + prędkość)
-            self.goal[0] = math.radians(z_deg)
-            while True:
-                if cancel.is_set():
-                    self.get_logger().info("Skan przerwany.")
-                    self._sweep_done()
-                    return
-                if (abs(self.current[0] - self.goal[0]) <= tol_rad
-                        and abs(self.velocity[0]) <= vel_stopped):
-                    break
-                time.sleep(0.002)
-
-            # Snake pattern: parzyste pasy w przód, nieparzyste wstecz
-            y_angles = y_forward if iz % 2 == 0 else y_backward
-            kierunek  = f"-{range_deg:.0f}°→+{range_deg:.0f}°" if iz % 2 == 0 \
-                        else f"+{range_deg:.0f}°→-{range_deg:.0f}°"
+            # Snake: parzyste pasy +range, nieparzyste -range
+            y_end     = range_deg if iz % 2 == 0 else -range_deg
             elapsed   = time.monotonic() - scan_start
             remaining = est_total - elapsed
             self.get_logger().info(
                 f"Pas {iz + 1:3d}/{n_total} ({100 * (iz + 1) // n_total:3d}%) "
-                f"| Z={z_deg:+.1f}° | Y: {kierunek} "
+                f"| Z={z_deg:+.1f}° | Y→{y_end:+.0f}° "
                 f"| pozostało ~{self._fmt_time(max(0.0, remaining))}"
             )
 
-            for y_deg in y_angles:
-                if cancel.is_set():
-                    self.get_logger().info("Skan przerwany.")
-                    self._sweep_done()
-                    return
-
-                # Zadaj cel Y i czekaj aż joint stoi w tolerancji (pozycja + prędkość)
-                self.goal[1] = math.radians(float(y_deg))
-                while True:
-                    if cancel.is_set():
-                        self.get_logger().info("Skan przerwany.")
-                        self._sweep_done()
-                        return
-                    if (abs(self.current[1] - self.goal[1]) <= tol_rad
-                            and abs(self.velocity[1]) <= vel_stopped):
-                        break
-                    time.sleep(0.002)
+            self.goal[1] = math.radians(y_end)
+            if not wait_arrived(1):
+                abort()
+                return
 
         elapsed = time.monotonic() - scan_start
         self.get_logger().info(
-            f"Skan stożkowy zakończony. Czas rzeczywisty: {self._fmt_time(elapsed)}. "
-            f"Powrót do pozycji 0°, 0°."
+            f"Skan zakończony. Czas: {self._fmt_time(elapsed)}. Powrót do 0°."
         )
-
-        # Powrót do pozycji zerowej
+        self._y_sweep_vel = None
         self.goal[0] = 0.0
         self.goal[1] = 0.0
-        while True:
-            if cancel.is_set():
-                return
-            if abs(self.current[0]) <= tol_rad and abs(self.current[1]) <= tol_rad:
-                break
-            time.sleep(0.002)
+        wait_arrived(0)
+        wait_arrived(1)
         self.get_logger().info("Powrót zakończony.")
         self._sweep_done()
 
@@ -250,6 +221,7 @@ class SimDriverNode(Node):
         max_vel = self.get_parameter("max_vel_rad_s").value
         max_acc = self.get_parameter("max_acc_rad_s2").value
         dt = 0.01
+        vel_limits = [max_vel, self._y_sweep_vel if self._y_sweep_vel is not None else max_vel]
         for i in range(2):
             delta = self.goal[i] - self._cmd[i]
             if abs(delta) < 1e-9:
@@ -257,7 +229,7 @@ class SimDriverNode(Node):
                 continue
 
             v_brake  = math.sqrt(2.0 * max_acc * abs(delta))
-            v_target = math.copysign(min(max_vel, v_brake), delta)
+            v_target = math.copysign(min(vel_limits[i], v_brake), delta)
 
             dv_max = max_acc * dt
             if self._cmd_vel[i] < v_target:

@@ -21,7 +21,7 @@ setup(
         (os.path.join("share", package_name, "rviz"),
             glob("rviz/*.rviz")),
         (os.path.join("share", package_name),
-            glob("waypoints.csv") + glob("sweep_waypoints.csv")),
+            glob("waypoints*.csv") + glob("sweep_waypoints*.csv")),
         (os.path.join("share", package_name, "config"),
             glob("config/*.yaml")),
         (os.path.join("share", package_name, "isaac"),

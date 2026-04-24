@@ -35,7 +35,7 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 from std_srvs.srv import Empty, Trigger
 from xm540_interfaces.srv import SetBoatPose, StartSweep
 
@@ -72,6 +72,7 @@ class MissionSupervisorNode(Node):
         self.declare_parameter("sweep_range_deg",      45.0)
         self.declare_parameter("sweep_step_deg",       5.0)
         self.declare_parameter("sweep_tolerance_deg",  0.5)
+        self.declare_parameter("world_scale",          1.0)
 
         # Stan wewnętrzny
         self._state        = State.IDLE
@@ -101,7 +102,8 @@ class MissionSupervisorNode(Node):
         self.create_subscription(LaserScan, "/sim/sonar",      self._cb_sonar,        10)
         self.create_subscription(Bool,      "/sweep_active",   self._cb_sweep_active, 10)
         self.create_subscription(Bool,      "/boat_arrived",   self._cb_boat_arrived, 10)
-        self._pub_status = self.create_publisher(String, "/mission/status", 10)
+        self._pub_status = self.create_publisher(String, "/mission/status",    10)
+        self._pub_prefix = self.create_publisher(String, "/scan_save_prefix", 10)
 
         # Pętla maszyny stanów — 100 Hz
         self.create_timer(0.01, self._tick)
@@ -123,9 +125,11 @@ class MissionSupervisorNode(Node):
             return response
 
         if scenario == "baseline":
-            csv_path = self.get_parameter("waypoints_file").value
+            csv_path = (self.get_parameter("waypoints_file").value
+                        or os.path.join(_PKG_SHARE, "waypoints.csv"))
         else:
-            csv_path = self.get_parameter("sweep_waypoints_file").value
+            csv_path = (self.get_parameter("sweep_waypoints_file").value
+                        or os.path.join(_PKG_SHARE, "sweep_waypoints.csv"))
 
         waypoints = self._load_csv(csv_path)
         if not waypoints:
@@ -292,11 +296,30 @@ class MissionSupervisorNode(Node):
             self._set_state(State.SEND_GOAL)
 
     def _do_done(self) -> None:
-        elapsed = time.monotonic() - self._t_start
+        elapsed  = time.monotonic() - self._t_start
+        dur_min  = elapsed / 60.0
+        n_wp     = len(self._waypoints)
+        scale    = self.get_parameter("world_scale").value
+
+        if self._scenario == "baseline":
+            prefix = (f"baseline"
+                      f"_x{scale:g}"
+                      f"_wp{n_wp}"
+                      f"_{dur_min:.1f}min")
+        else:
+            r = self.get_parameter("sweep_range_deg").value
+            s = self.get_parameter("sweep_step_deg").value
+            prefix = (f"sweep"
+                      f"_x{scale:g}"
+                      f"_wp{n_wp}"
+                      f"_r{r:g}s{s:g}"
+                      f"_{dur_min:.1f}min")
+
         self.get_logger().info(
-            f"Misja zakończona — {len(self._waypoints)} waypointów "
-            f"w {elapsed/60:.1f} min. Zapisuję CSV..."
+            f"Misja zakończona — {n_wp} waypointów "
+            f"w {dur_min:.1f} min. Zapisuję CSV jako '{prefix}_<ts>.csv'..."
         )
+        self._pub_prefix.publish(String(data=prefix))
         self._cli_save.call_async(Empty.Request())
         self._pub_status.publish(String(data="DONE"))
         self._set_state(State.IDLE)
