@@ -66,12 +66,18 @@ def parse_args():
     p.add_argument("--time",  type=float, default=None,
                    help="Docelowy czas trwania misji [min]. Zastępuje --step i --n-grid; "
                         "wymaga --speed.")
-    p.add_argument("--speed", type=float, default=None,
-                   help="Prędkość łódki [m/s]. Wymagane gdy podano --time.")
+    p.add_argument("--speed", type=float, default=1.0,
+                   help="Prędkość łódki [m/s] (domyślnie 1.0). Wymagane gdy podano --time.")
     p.add_argument("--all-points", action="store_true",
                    help="Gęsta siatka wewnątrz jeziora (domyślnie: przecięcia kolumn z obrysem).")
     p.add_argument("--step-tol", type=float, default=0.5,
                    help="Tolerancja bisection [%%] (domyślnie 0.5)")
+    p.add_argument("--interpolate", action="store_true",
+                   help="Dodaj interpolowane punkty co boat_speed/sonar_hz metrów między "
+                        "waypointami (symuluje ciągły skan podczas płynięcia). "
+                        "Wymaga --speed i --sonar-hz.")
+    p.add_argument("--sonar-hz", type=float, default=20.0,
+                   help="Częstotliwość sonaru [Hz] używana przy --interpolate (domyślnie 20.0)")
     return p.parse_args()
 
 
@@ -307,6 +313,30 @@ def find_step_for_time(polygon, target_time_s: float, boat_speed: float,
     return best_step, best_wps
 
 
+def interpolate_waypoints(waypoints, boat_speed: float, sonar_hz: float):
+    """Wstawia punkty co boat_speed/sonar_hz metrów wzdłuż każdego odcinka trasy."""
+    from shapely.geometry import Point
+
+    interval_m = boat_speed / sonar_hz
+    result = []
+    for i, p in enumerate(waypoints):
+        result.append(p)
+        if i + 1 >= len(waypoints):
+            break
+        q = waypoints[i + 1]
+        dx = (q.x - p.x) * LAKE_SCALE
+        dy = (q.y - p.y) * LAKE_SCALE
+        dist = math.sqrt(dx * dx + dy * dy)
+        n_steps = int(dist / interval_m)
+        for k in range(1, n_steps):
+            t = k * interval_m / dist
+            result.append(Point(p.x + t * (q.x - p.x), p.y + t * (q.y - p.y)))
+
+    print(f"Interpolacja: {len(waypoints)} wp → {len(result)} (co {interval_m:.3f} m, "
+          f"{boat_speed} m/s / {sonar_hz} Hz)")
+    return result
+
+
 def obj_to_world(obj_x: float, obj_z: float, boat_z: float):
     """Transformacja OBJ(x, z) → Isaac Sim world(x, y, z)."""
     world_x = LAKE_SCALE * obj_x
@@ -378,6 +408,8 @@ def main():
         else:
             base = "waypoints_sweep" if args.sweep else "waypoints"
             stem = f"{base}_step_{args.step}"
+        if args.interpolate:
+            stem += f"_interp_{args.speed}mps_{args.sonar_hz}hz"
         args.output = SCRIPT_DIR.parent / f"{stem}.csv"
 
     mode_count = sum([args.time is not None, args.n_grid is not None, args.step != 2.0])
@@ -436,6 +468,12 @@ def main():
     if not waypoints:
         print("BŁĄD: brak waypointów — sprawdź --water-y i --step", file=sys.stderr)
         sys.exit(1)
+
+    if args.interpolate:
+        if args.speed is None:
+            print("BŁĄD: --interpolate wymaga --speed", file=sys.stderr)
+            sys.exit(1)
+        waypoints = interpolate_waypoints(waypoints, args.speed, args.sonar_hz)
 
     # Podsumowanie pokrycia
     area_world = polygon.area * (LAKE_SCALE ** 2)
