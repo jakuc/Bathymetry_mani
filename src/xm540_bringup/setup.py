@@ -20,8 +20,8 @@ setup(
             glob("meshes/*.stl")),
         (os.path.join("share", package_name, "rviz"),
             glob("rviz/*.rviz")),
-        (os.path.join("share", package_name),
-            glob("waypoints*.csv") + glob("sweep_waypoints*.csv")),
+        (os.path.join("share", package_name, "waypoints"),
+            glob("waypoints/*.csv")),
         (os.path.join("share", package_name, "config"),
             glob("config/*.yaml")),
         (os.path.join("share", package_name, "isaac"),
@@ -40,6 +40,7 @@ setup(
             "waypoint_viz_node        = xm540_bringup.waypoint_viz_node:main",
             "mission_supervisor_node  = xm540_bringup.mission_supervisor_node:main",
             "operator_panel           = xm540_bringup.operator_panel:main",
+            "batch_sweep_node         = xm540_bringup.batch_sweep_node:main",
         ],
     },
 )

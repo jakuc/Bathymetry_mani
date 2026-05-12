@@ -21,6 +21,7 @@ import math
 import pathlib
 import sys
 import time
+from datetime import datetime
 
 from isaacsim import SimulationApp
 
@@ -273,8 +274,8 @@ def build_sweep_angles(range_deg: float, step_deg: float) -> list:
 def main(tiles_dir: pathlib.Path,
          step_m: float, n_grid: int | None, water_y: str, boat_z: float,
          mesh_reduction: float,
-         out_path: pathlib.Path, range_deg: float, step_deg: float,
-         sweep_z: bool, save_csv_flag: bool) -> None:
+         out_dir: pathlib.Path, range_deg: float, step_deg: float,
+         sweep_z: bool, time_min: float, save_csv_flag: bool) -> None:
 
     lake_scale = MESH_NATURAL_REDUCTION / mesh_reduction
     print(f"[sweep_isaac] Skala mesha: {mesh_reduction}× pomniejszony → ×{lake_scale:.4g} w Isaac Sim")
@@ -340,6 +341,10 @@ def main(tiles_dir: pathlib.Path,
 
     pts = np.array([[r[5], r[6], r[7]] for r in results], dtype=np.float32)
 
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stem = f"sweep_x{lake_scale:g}_wp{len(waypoints)}_r{range_deg:g}s{step_deg:g}_{time_min:g}min_{ts}"
+    out_path = out_dir / stem
+
     pcd_path = out_path.with_suffix(".pcd")
     save_pcd(pts, pcd_path)
     print(f"[sweep_isaac] PCD → {pcd_path}")
@@ -394,8 +399,10 @@ if __name__ == "__main__":
     sim = parser.add_argument_group("simulation")
     sim.add_argument("--tiles",      default=str(_DEFAULT_TILES_DIR),
                      help="Katalog z kafelkami .obj jeziora")
-    sim.add_argument("--out",        default="/workspace/log/bathymetry_sweep_isaac",
-                     help="Ścieżka wyjściowa (bez rozszerzenia)")
+    sim.add_argument("--out",        default="/workspace/log",
+                     help="Katalog wyjściowy (nazwa pliku generowana automatycznie)")
+    sim.add_argument("--time",       type=float, required=True,
+                     help="Planowany czas trwania misji [min] — wpisywany do nazwy pliku")
     sim.add_argument("--range_deg",  type=float, default=90.0,
                      help="Połowa zakresu sweepowania [°]")
     sim.add_argument("--step_deg",   type=float, default=5.0,
@@ -414,9 +421,10 @@ if __name__ == "__main__":
         water_y       = args.water_y,
         boat_z        = args.boat_z,
         mesh_reduction= args.mesh_reduction,
-        out_path      = pathlib.Path(args.out),
+        out_dir       = pathlib.Path(args.out),
         range_deg     = args.range_deg,
         step_deg      = args.step_deg,
         sweep_z       = not args.no_sweep_z,
+        time_min      = args.time,
         save_csv_flag = args.csv,
     )

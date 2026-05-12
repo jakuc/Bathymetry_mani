@@ -241,7 +241,6 @@ class ScanCollectorNode(Node):
     # ---------------------------------------------------------------- clear
 
     def _srv_clear(self, _request, response):
-        self._srv_save_csv(_request, response)
         n = len(self._points)
         p = len(self._pending)
         self._points.clear()

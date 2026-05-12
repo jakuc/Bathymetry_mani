@@ -35,9 +35,10 @@ import sys
 
 import numpy as np
 
-SCRIPT_DIR = pathlib.Path(__file__).parent.resolve()
-MESHES_DIR = SCRIPT_DIR.parent / "meshes"
-LAKE_OBJ   = MESHES_DIR / "big_lake_simp.obj"
+SCRIPT_DIR   = pathlib.Path(__file__).parent.resolve()
+MESHES_DIR   = SCRIPT_DIR.parent / "meshes"
+LAKE_OBJ     = MESHES_DIR / "big_lake_simp.obj"
+WAYPOINTS_DIR = SCRIPT_DIR.parent / "waypoints"
 
 # Transformacja matching isaac_sim.py (LAKE_TILES_ROTATE_X = 90°, LAKE_SCALE = 1, LAKE_TRANSLATE_Z = -30)
 LAKE_SCALE       = 1.0
@@ -63,15 +64,18 @@ def parse_args():
     p.add_argument("--margin", type=float, default=0.0,
                    help="Margines od brzegu jeziora [m] (domyślnie 0.0). "
                         "Przy --all-points warto ustawić >0 by uniknąć płytkich waypointów.")
-    p.add_argument("--time",  type=float, default=None,
-                   help="Docelowy czas trwania misji [min]. Zastępuje --step i --n-grid; "
-                        "wymaga --speed.")
+    p.add_argument("--time",  type=float, nargs="+", default=None,
+                   help="Docelowy czas trwania misji [min]. Można podać wiele wartości "
+                        "(np. --time 15.2 20.1 61.0) — skrypt wygeneruje osobny plik dla każdej. "
+                        "Zastępuje --step i --n-grid; wymaga --speed.")
     p.add_argument("--speed", type=float, default=1.0,
                    help="Prędkość łódki [m/s] (domyślnie 1.0). Wymagane gdy podano --time.")
     p.add_argument("--all-points", action="store_true",
                    help="Gęsta siatka wewnątrz jeziora (domyślnie: przecięcia kolumn z obrysem).")
     p.add_argument("--step-tol", type=float, default=0.5,
                    help="Tolerancja bisection [%%] (domyślnie 0.5)")
+    p.add_argument("--lake-scale", type=float, default=1.0,
+                   help="Skala jeziora (musi zgadzać się z world_scale w isaac_sim.yaml, domyślnie 1.0)")
     p.add_argument("--interpolate", action="store_true",
                    help="Dodaj interpolowane punkty co boat_speed/sonar_hz metrów między "
                         "waypointami (symuluje ciągły skan podczas płynięcia). "
@@ -164,10 +168,10 @@ def get_contour_polygon(mesh, water_y: float, grid_size: int = 1024):
 
 
 def generate_grid(polygon, step_obj: float, turns_only: bool = False):
-    """Siatka punktów wewnątrz konturu, serpentyna wzdłuż X.
+    """Siatka punktów wewnątrz konturu, serpentyna wzdłuż Y (Z w OBJ).
 
     step_obj:   krok w przestrzeni OBJ (= step_m / LAKE_SCALE)
-    turns_only: zachowaj tylko punkty wejścia/wyjścia z jeziora na każdej kolumnie
+    turns_only: zachowaj tylko punkty wejścia/wyjścia z jeziora na każdym wierszu
     Zwraca listę (obj_x, obj_z).
     """
     from shapely.geometry import Point
@@ -180,15 +184,15 @@ def generate_grid(polygon, step_obj: float, turns_only: bool = False):
     print(f"\nSiatka w przestrzeni OBJ: {len(xs)} × {len(zs)} = {len(xs)*len(zs):,} kandydatów")
 
     waypoints = []
-    for col_idx, x in enumerate(xs):
+    for row_idx, z in enumerate(zs):
         if turns_only:
-            z_in = [i for i, z in enumerate(zs) if polygon.contains(Point(x, z))]
-            if not z_in:
+            x_in = [i for i, x in enumerate(xs) if polygon.contains(Point(x, z))]
+            if not x_in:
                 continue
             ep = []
-            run_start = z_in[0]
-            prev = z_in[0]
-            for idx in z_in[1:]:
+            run_start = x_in[0]
+            prev = x_in[0]
+            for idx in x_in[1:]:
                 if idx != prev + 1:
                     ep.append(run_start)
                     if run_start != prev:
@@ -198,35 +202,35 @@ def generate_grid(polygon, step_obj: float, turns_only: bool = False):
             ep.append(run_start)
             if run_start != prev:
                 ep.append(prev)
-            col = [Point(x, zs[i]) for i in ep]
+            row = [Point(xs[i], z) for i in ep]
         else:
-            col = [Point(x, z) for z in zs if polygon.contains(Point(x, z))]
+            row = [Point(x, z) for x in xs if polygon.contains(Point(x, z))]
 
-        if col_idx % 2 == 1:
-            col = col[::-1]   # serpentyna — co druga kolumna odwrócona
-        waypoints.extend(col)
+        if row_idx % 2 == 1:
+            row = row[::-1]   # serpentyna — co drugi wiersz odwrócony
+        waypoints.extend(row)
 
     print(f"Waypointów wewnątrz konturu: {len(waypoints):,}")
     return waypoints
 
 
 def generate_boundary_grid(polygon, step_obj: float):
-    """Waypoints jako przecięcia kolumn z obrysem jeziora.
+    """Waypoints jako przecięcia wierszy z obrysem jeziora.
 
-    Każda kolumna (stałe X) daje punkty dokładnie na granicy konturu.
-    Ścieżka: serpentyna po kolumnach, przejścia między kolumnami po prostej.
+    Każdy wiersz (stałe Z) daje punkty dokładnie na granicy konturu.
+    Ścieżka: serpentyna po wierszach, przejścia między wierszami po prostej.
     """
     from shapely.geometry import LineString, Point
 
     minx, minz, maxx, maxz = polygon.bounds
-    xs = np.arange(minx + step_obj / 2, maxx, step_obj)
+    zs = np.arange(minz + step_obj / 2, maxz, step_obj)
 
-    print(f"\nSiatka w przestrzeni OBJ: {len(xs)} kolumn")
+    print(f"\nSiatka w przestrzeni OBJ: {len(zs)} wierszy")
 
     waypoints = []
-    for col_idx, x in enumerate(xs):
-        col_line = LineString([(x, minz - 1.0), (x, maxz + 1.0)])
-        isect = polygon.intersection(col_line)
+    for row_idx, z in enumerate(zs):
+        row_line = LineString([(minx - 1.0, z), (maxx + 1.0, z)])
+        isect = polygon.intersection(row_line)
 
         if isect.is_empty or isect.geom_type == 'Point':
             continue
@@ -234,16 +238,16 @@ def generate_boundary_grid(polygon, step_obj: float):
         if isect.geom_type == 'LineString':
             segs = [isect]
         elif isect.geom_type == 'MultiLineString':
-            segs = sorted(isect.geoms, key=lambda s: min(c[1] for c in s.coords))
+            segs = sorted(isect.geoms, key=lambda s: min(c[0] for c in s.coords))
         else:
             continue
 
         seg_endpoints = []
         for seg in segs:
-            coords = sorted(seg.coords, key=lambda c: c[1])
+            coords = sorted(seg.coords, key=lambda c: c[0])
             seg_endpoints.append((Point(coords[0]), Point(coords[-1])))
 
-        if col_idx % 2 == 1:
+        if row_idx % 2 == 1:
             seg_endpoints = [(e, s) for s, e in reversed(seg_endpoints)]
 
         for start, end in seg_endpoints:
@@ -396,21 +400,31 @@ def save_preview(polygon, waypoints, output_csv: pathlib.Path):
     print(f"Podgląd zapisany → {png_path}")
 
 
+def _output_path(args, time_val=None) -> pathlib.Path:
+    """Zwraca ścieżkę wyjściową dla podanej wartości time (lub trybu step/n-grid)."""
+    WAYPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+    scale = args.lake_scale
+    scale_str = str(int(scale)) if scale == int(scale) else str(scale)
+    if time_val is not None:
+        stem = f"waypoints_time_{time_val}min_{args.speed}mps"
+    elif args.n_grid is not None:
+        base = "waypoints_sweep" if args.sweep else "waypoints"
+        stem = f"{base}_ngrid_{args.n_grid}"
+    else:
+        base = "waypoints_sweep" if args.sweep else "waypoints"
+        stem = f"{base}_step_{args.step}"
+    if args.interpolate:
+        stem += "_interp"
+    stem += f"_x{scale_str}"
+    return WAYPOINTS_DIR / f"{stem}.csv"
+
+
 def main():
     args = parse_args()
 
-    if args.output is None:
-        if args.time is not None:
-            stem = f"waypoints_time_{args.time}min_{args.speed}mps"
-        elif args.n_grid is not None:
-            base = "waypoints_sweep" if args.sweep else "waypoints"
-            stem = f"{base}_ngrid_{args.n_grid}"
-        else:
-            base = "waypoints_sweep" if args.sweep else "waypoints"
-            stem = f"{base}_step_{args.step}"
-        if args.interpolate:
-            stem += f"_interp_{args.speed}mps_{args.sonar_hz}hz"
-        args.output = SCRIPT_DIR.parent / f"{stem}.csv"
+    global LAKE_SCALE, LAKE_TRANSLATE_Z
+    LAKE_SCALE = args.lake_scale
+    LAKE_TRANSLATE_Z = -LAKE_SCALE * 3.0
 
     mode_count = sum([args.time is not None, args.n_grid is not None, args.step != 2.0])
     if mode_count > 1:
@@ -420,6 +434,10 @@ def main():
         if args.step    != 2.0:      active.append("--step")
         print(f"WARN: podano kolidujące tryby {active} — używam pierwszego z listy "
               f"(--time > --n-grid > --step)", file=sys.stderr)
+
+    if args.output is not None and args.time is not None and len(args.time) > 1:
+        print("WARN: --output ignorowane przy wielu wartościach --time", file=sys.stderr)
+        args.output = None
 
     mesh = load_mesh(LAKE_OBJ)
 
@@ -444,15 +462,37 @@ def main():
             sys.exit(1)
         print(f"Erozja brzegu: {args.margin} m (OBJ: {margin_obj:.4f})")
 
-    # Krok siatki w przestrzeni OBJ
+    area_world = polygon.area * (LAKE_SCALE ** 2)
+    print(f"Powierzchnia jeziora: ~{area_world:.0f} m²  (~{area_world/1e6:.3f} km²)")
+
+    # ── tryb --time: pętla po wartościach ──────────────────────────────────────
     if args.time is not None:
         if args.speed is None:
             print("BŁĄD: --time wymaga --speed", file=sys.stderr)
             sys.exit(1)
         tol_frac = args.step_tol / 100.0
-        _, waypoints = find_step_for_time(polygon, args.time * 60.0, args.speed, tol_frac,
-                                          all_points=args.all_points)
-    elif args.n_grid is not None:
+        time_values = args.time  # lista
+
+        for time_val in time_values:
+            print(f"\n{'='*60}")
+            print(f"Generowanie waypointów: time={time_val} min")
+            print(f"{'='*60}")
+            _, waypoints = find_step_for_time(polygon, time_val * 60.0, args.speed, tol_frac,
+                                              all_points=args.all_points)
+            if not waypoints:
+                print(f"BŁĄD: brak waypointów dla time={time_val} — pomijam", file=sys.stderr)
+                continue
+            if args.interpolate:
+                waypoints = interpolate_waypoints(waypoints, args.speed, args.sonar_hz)
+            print(f"Gęstość: 1 waypoint / {area_world/len(waypoints):.1f} m²")
+            out = args.output if (args.output is not None and len(time_values) == 1) \
+                  else _output_path(args, time_val)
+            save_csv(waypoints, args.boat_z, out)
+            save_preview(polygon, waypoints, out)
+        return
+
+    # ── tryb --step / --n-grid ──────────────────────────────────────────────────
+    if args.n_grid is not None:
         minx, minz, maxx, maxz = polygon.bounds
         step_m   = min((maxx - minx), (maxz - minz)) * LAKE_SCALE / args.n_grid
         step_obj = step_m / LAKE_SCALE
@@ -475,13 +515,10 @@ def main():
             sys.exit(1)
         waypoints = interpolate_waypoints(waypoints, args.speed, args.sonar_hz)
 
-    # Podsumowanie pokrycia
-    area_world = polygon.area * (LAKE_SCALE ** 2)
-    print(f"Powierzchnia jeziora: ~{area_world:.0f} m²  (~{area_world/1e6:.3f} km²)")
     print(f"Gęstość: 1 waypoint / {area_world/len(waypoints):.1f} m²")
-
-    save_csv(waypoints, args.boat_z, args.output)
-    save_preview(polygon, waypoints, args.output)
+    out = args.output if args.output is not None else _output_path(args)
+    save_csv(waypoints, args.boat_z, out)
+    save_preview(polygon, waypoints, out)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ isaac_sim_node:
   ros__parameters:
 
     # --- Świat ---
-    world_scale:            5.0   # globalny współczynnik skali świata (x1=~50×45m, x10=~500×450m)
+    world_scale:            10.0   # globalny współczynnik skali świata (x1=~50×45m, x10=~500×450m)
 
     # --- Łódka ---
     boat_speed:             1.0   # prędkość łódki [m/s]

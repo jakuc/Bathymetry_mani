@@ -36,6 +36,7 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, Float32, String
+from rcl_interfaces.srv import GetParameters
 from std_srvs.srv import Empty, Trigger
 from xm540_interfaces.srv import SetBoatPose, StartSweep
 
@@ -60,7 +61,7 @@ class MissionSupervisorNode(Node):
         super().__init__("mission_supervisor_node")
 
         # Parametry — scenariusz 1
-        self.declare_parameter("waypoints_file",    os.path.join(_PKG_SHARE, "waypoints.csv"))
+        self.declare_parameter("waypoints_file",    os.path.join(_PKG_SHARE, "waypoints", "waypoints.csv"))
         self.declare_parameter("boat_buffer_size",    5)
         self.declare_parameter("boat_arrived_timeout", 120.0)  # watchdog [s]
         self.declare_parameter("stabilize_time",    0.5)
@@ -68,12 +69,13 @@ class MissionSupervisorNode(Node):
         self.declare_parameter("progress_interval", 0)  # 0 = tryb procentowy (co 5%)
 
         # Parametry — scenariusz 2
-        self.declare_parameter("sweep_waypoints_file", os.path.join(_PKG_SHARE, "sweep_waypoints.csv"))
+        self.declare_parameter("sweep_waypoints_file", os.path.join(_PKG_SHARE, "waypoints", "sweep_waypoints.csv"))
         self.declare_parameter("sweep_stabilize_time", 1.0)
         self.declare_parameter("sweep_range_deg",      45.0)
         self.declare_parameter("sweep_step_deg",       5.0)
         self.declare_parameter("sweep_tolerance_deg",  0.5)
-        self.declare_parameter("world_scale",          1.0)
+
+        self._world_scale: float = 1.0  # nadpisywane przez _fetch_world_scale
 
         # Stan wewnętrzny
         self._state        = State.IDLE
@@ -109,7 +111,29 @@ class MissionSupervisorNode(Node):
         # Pętla maszyny stanów — 100 Hz
         self.create_timer(0.01, self._tick)
 
+        # Odczytaj world_scale z isaac_sim_node (retry co 2s aż będzie dostępny)
+        self._get_scale_cli = self.create_client(GetParameters, "/isaac_sim_node/get_parameters")
+        self._fetch_world_scale_timer = self.create_timer(2.0, self._fetch_world_scale)
+
         self.get_logger().info("MissionSupervisorNode gotowy.")
+
+    # ---------------------------------------------------------- world_scale fetch
+
+    def _fetch_world_scale(self) -> None:
+        if not self._get_scale_cli.service_is_ready():
+            return
+        req = GetParameters.Request()
+        req.names = ["world_scale"]
+        self._get_scale_cli.call_async(req).add_done_callback(self._on_world_scale)
+
+    def _on_world_scale(self, future) -> None:
+        try:
+            result = future.result()
+            self._world_scale = float(result.values[0].double_value)
+            self.get_logger().info(f"world_scale = {self._world_scale} (z isaac_sim_node)")
+            self.destroy_timer(self._fetch_world_scale_timer)
+        except Exception:
+            pass  # isaac_sim_node jeszcze nie gotowy — timer ponowi za 2s
 
     # ---------------------------------------------------------------- services
 
@@ -127,10 +151,10 @@ class MissionSupervisorNode(Node):
 
         if scenario == "baseline":
             csv_path = (self.get_parameter("waypoints_file").value
-                        or os.path.join(_PKG_SHARE, "waypoints.csv"))
+                        or os.path.join(_PKG_SHARE, "waypoints", "waypoints.csv"))
         else:
             csv_path = (self.get_parameter("sweep_waypoints_file").value
-                        or os.path.join(_PKG_SHARE, "sweep_waypoints.csv"))
+                        or os.path.join(_PKG_SHARE, "waypoints", "sweep_waypoints.csv"))
 
         waypoints = self._load_csv(csv_path)
         if not waypoints:
@@ -305,7 +329,7 @@ class MissionSupervisorNode(Node):
         elapsed  = time.monotonic() - self._t_start
         dur_min  = elapsed / 60.0
         n_wp     = len(self._waypoints)
-        scale    = self.get_parameter("world_scale").value
+        scale    = self._world_scale
 
         if self._scenario == "baseline":
             prefix = (f"baseline"

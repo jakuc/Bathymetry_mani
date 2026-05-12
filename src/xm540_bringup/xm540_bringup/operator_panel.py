@@ -27,7 +27,8 @@ MENU = """
   [1]  Pomiar batymetryczny  (wszystkie waypointy, sonar pionowy)
   [2]  Sweep                 (wybrane punkty, skan stożkowy)
   [a]  Przerwij misję
-  [c]  Wyczyść chmurę punktów
+  [s]  Zapisz chmurę punktów
+  [c]  Wyczyść chmurę punktów (bez zapisu)
   [q]  Wyjście
 """
 
@@ -39,6 +40,7 @@ class OperatorPanel(Node):
         self._cli_baseline = self.create_client(Trigger, "/mission/start_baseline")
         self._cli_sweep    = self.create_client(Trigger, "/mission/start_sweep")
         self._cli_abort    = self.create_client(Trigger, "/mission/abort")
+        self._cli_save     = self.create_client(Empty,   "/scan_collector_node/save_csv")
         self._cli_clear    = self.create_client(Empty,   "/scan_collector_node/clear")
         self.create_subscription(String, "/mission/status", self._cb_status, 10)
 
@@ -90,8 +92,12 @@ class OperatorPanel(Node):
                 print("  Przerywam misję...")
                 self._call(self._cli_abort, "/mission/abort")
 
+            elif choice == "s":
+                print("  Zapisuję chmurę punktów...")
+                self._call(self._cli_save, "/scan_collector_node/save_csv")
+
             elif choice == "c":
-                print("  Czyszczę chmurę punktów...")
+                print("  Czyszczę chmurę punktów (bez zapisu)...")
                 self._call(self._cli_clear, "/scan_collector_node/clear")
 
             elif choice == "q":
