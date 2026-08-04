@@ -1,0 +1,48 @@
+# Obraz do pracy z prawdziwym sprzętem, bez Isaac Sim.
+# Użycie:
+#   docker compose -f docker/docker-compose.real.yml build
+#   docker compose -f docker/docker-compose.real.yml run --rm mani_ros_real bash
+#   # wewnątrz kontenera:
+#   colcon build --packages-select hardware_controller bathset_description
+#   ros2 launch hardware_controller real_hardware.launch.py
+#
+# Wymaga podpiętego sprzętu i zainstalowanych udev rules na hoście (scripts/install.sh)
+# - /dev/u2d2 (serwo XM540 przez U2D2), /dev/echosounder (SLD-100) i /dev/gnss
+#   (Septentrio mosaic-H) muszą już istnieć.
+
+services:
+  mani_ros_real:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.real
+    image: mani_ros:real
+    container_name: mani_real
+
+    network_mode: host
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - ROS_LOG_DIR=/workspace/log
+
+    devices:
+      - /dev/u2d2:/dev/u2d2
+      - /dev/echosounder:/dev/echosounder
+      - /dev/gnss:/dev/gnss
+      # Drugi port CDC odbiornika - do konfiguracji i podglądu RTK
+      # (scripts/gnss_rtk.py) bez zabierania portu wtyczce GnssSensor.
+      - /dev/gnss_aux:/dev/gnss_aux
+
+    volumes:
+      - ../src:/workspace/src
+      - ros_ws_build_real:/workspace/build
+      - ros_ws_install_real:/workspace/install
+      - ../log:/workspace/log
+      - /tmp/.X11-unix:/tmp/.X11-unix
+
+    stdin_open: true
+    tty: true
+
+volumes:
+  ros_ws_build_real:
+  ros_ws_install_real:

@@ -1,0 +1,228 @@
+#include "hardware_controller/dynamixel_system.hpp"
+
+#include <cmath>
+
+#include "hardware_interface/types/hardware_interface_type_values.hpp"
+#include "pluginlib/class_list_macros.hpp"
+
+namespace hardware_controller
+{
+
+hardware_interface::CallbackReturn DynamixelSystem::on_init(const hardware_interface::HardwareInfo & info)
+{
+  if (
+    hardware_interface::SystemInterface::on_init(info) !=
+    hardware_interface::CallbackReturn::SUCCESS)
+  {
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  device_port_ = info_.hardware_parameters.at("device_port");
+  baud_rate_ = std::stoi(info_.hardware_parameters.at("baud_rate"));
+
+  joints_.reserve(info_.joints.size());
+  for (const auto & joint : info_.joints)
+  {
+    JointHandle jh;
+    jh.name = joint.name;
+    jh.servo_id = static_cast<uint8_t>(std::stoi(joint.parameters.at("servo_id")));
+    joints_.push_back(jh);
+  }
+
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+std::vector<hardware_interface::StateInterface> DynamixelSystem::export_state_interfaces()
+{
+  std::vector<hardware_interface::StateInterface> interfaces;
+  for (auto & joint : joints_)
+  {
+    interfaces.emplace_back(joint.name, hardware_interface::HW_IF_POSITION, &joint.state_position);
+    interfaces.emplace_back(joint.name, hardware_interface::HW_IF_VELOCITY, &joint.state_velocity);
+    interfaces.emplace_back(joint.name, hardware_interface::HW_IF_EFFORT, &joint.state_effort);
+    interfaces.emplace_back(joint.name, "temperature", &joint.state_temperature);
+  }
+  return interfaces;
+}
+
+std::vector<hardware_interface::CommandInterface> DynamixelSystem::export_command_interfaces()
+{
+  std::vector<hardware_interface::CommandInterface> interfaces;
+  for (auto & joint : joints_)
+  {
+    interfaces.emplace_back(joint.name, hardware_interface::HW_IF_POSITION, &joint.command_position);
+  }
+  return interfaces;
+}
+
+hardware_interface::CallbackReturn DynamixelSystem::on_configure(const rclcpp_lifecycle::State &)
+{
+  port_handler_ = dynamixel::PortHandler::getPortHandler(device_port_.c_str());
+  packet_handler_ = dynamixel::PacketHandler::getPacketHandler(kProtocolVersion);
+
+  if (!port_handler_->openPort())
+  {
+    RCLCPP_ERROR(logger_, "Nie można otworzyć portu %s", device_port_.c_str());
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+  if (!port_handler_->setBaudRate(baud_rate_))
+  {
+    RCLCPP_ERROR(logger_, "Nie można ustawić baud rate %d na %s", baud_rate_, device_port_.c_str());
+    return hardware_interface::CallbackReturn::ERROR;
+  }
+
+  for (auto & joint : joints_)
+  {
+    write1(joint.servo_id, DynamixelRegisters::ADDR_TORQUE_ENABLE, 0);
+    write1(joint.servo_id, DynamixelRegisters::ADDR_OPERATING_MODE, DynamixelRegisters::MODE_POSITION);
+    write4(joint.servo_id, DynamixelRegisters::ADDR_PROFILE_VELOCITY, 0);
+    write4(joint.servo_id, DynamixelRegisters::ADDR_PROFILE_ACCELERATION, 0);
+  }
+
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+hardware_interface::CallbackReturn DynamixelSystem::on_activate(const rclcpp_lifecycle::State &)
+{
+  for (auto & joint : joints_)
+  {
+    write1(joint.servo_id, DynamixelRegisters::ADDR_TORQUE_ENABLE, 1);
+    // Komenda startowa = aktualna pozycja serwa, żeby aktywacja nie szarpnęła manipulatorem.
+    const int32_t raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_POSITION);
+    joint.state_position = raw_to_rad(raw);
+    joint.command_position = joint.state_position;
+  }
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+hardware_interface::CallbackReturn DynamixelSystem::on_deactivate(const rclcpp_lifecycle::State &)
+{
+  for (auto & joint : joints_)
+  {
+    write1(joint.servo_id, DynamixelRegisters::ADDR_TORQUE_ENABLE, 0);
+  }
+  if (port_handler_)
+  {
+    port_handler_->closePort();
+  }
+  return hardware_interface::CallbackReturn::SUCCESS;
+}
+
+hardware_interface::return_type DynamixelSystem::read(const rclcpp::Time &, const rclcpp::Duration &)
+{
+  for (auto & joint : joints_)
+  {
+    const int32_t pos_raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_POSITION);
+    const int32_t vel_raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_VELOCITY);
+    const uint16_t cur_raw = read2(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_CURRENT);
+    const uint8_t tmp_raw = read1(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_TEMPERATURE);
+
+    joint.state_position = raw_to_rad(pos_raw);
+    // velocity/effort surowe, bez konwersji na jednostki SI — tak samo jak
+    // dotychczasowy dynamixel_node.py (JointState.velocity/effort = raw).
+    joint.state_velocity = static_cast<double>(vel_raw);
+    joint.state_effort = static_cast<double>(cur_raw);
+    joint.state_temperature = static_cast<double>(tmp_raw);
+  }
+  return hardware_interface::return_type::OK;
+}
+
+hardware_interface::return_type DynamixelSystem::write(const rclcpp::Time &, const rclcpp::Duration &)
+{
+  for (auto & joint : joints_)
+  {
+    write4(joint.servo_id, DynamixelRegisters::ADDR_GOAL_POSITION, rad_to_raw(joint.command_position));
+  }
+  return hardware_interface::return_type::OK;
+}
+
+double DynamixelSystem::raw_to_rad(int32_t raw) const
+{
+  return static_cast<double>(raw - kCenterRaw) * 2.0 * M_PI / static_cast<double>(kEncoderResolution);
+}
+
+int32_t DynamixelSystem::rad_to_raw(double rad) const
+{
+  return kCenterRaw + static_cast<int32_t>(std::lround(rad * kEncoderResolution / (2.0 * M_PI)));
+}
+
+void DynamixelSystem::write1(uint8_t servo_id, uint16_t addr, uint8_t value)
+{
+  uint8_t error = 0;
+  const int result = packet_handler_->write1ByteTxRx(port_handler_, servo_id, addr, value, &error);
+  if (result != COMM_SUCCESS)
+  {
+    RCLCPP_ERROR(
+      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
+      packet_handler_->getTxRxResult(result));
+  }
+  else if (error != 0)
+  {
+    RCLCPP_WARN(
+      logger_, "Błąd pakietu serwa ID=%d: %s", servo_id, packet_handler_->getRxPacketError(error));
+  }
+}
+
+void DynamixelSystem::write4(uint8_t servo_id, uint16_t addr, int32_t value)
+{
+  uint8_t error = 0;
+  const int result = packet_handler_->write4ByteTxRx(
+    port_handler_, servo_id, addr, static_cast<uint32_t>(value), &error);
+  if (result != COMM_SUCCESS)
+  {
+    RCLCPP_ERROR(
+      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
+      packet_handler_->getTxRxResult(result));
+  }
+  else if (error != 0)
+  {
+    RCLCPP_WARN(
+      logger_, "Błąd pakietu serwa ID=%d: %s", servo_id, packet_handler_->getRxPacketError(error));
+  }
+}
+
+uint8_t DynamixelSystem::read1(uint8_t servo_id, uint16_t addr)
+{
+  uint8_t value = 0;
+  uint8_t error = 0;
+  const int result = packet_handler_->read1ByteTxRx(port_handler_, servo_id, addr, &value, &error);
+  if (result != COMM_SUCCESS)
+  {
+    RCLCPP_ERROR(
+      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
+      packet_handler_->getTxRxResult(result));
+  }
+  return value;
+}
+
+uint16_t DynamixelSystem::read2(uint8_t servo_id, uint16_t addr)
+{
+  uint16_t value = 0;
+  uint8_t error = 0;
+  const int result = packet_handler_->read2ByteTxRx(port_handler_, servo_id, addr, &value, &error);
+  if (result != COMM_SUCCESS)
+  {
+    RCLCPP_ERROR(
+      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
+      packet_handler_->getTxRxResult(result));
+  }
+  return value;
+}
+
+int32_t DynamixelSystem::read4(uint8_t servo_id, uint16_t addr)
+{
+  uint32_t value = 0;
+  uint8_t error = 0;
+  const int result = packet_handler_->read4ByteTxRx(port_handler_, servo_id, addr, &value, &error);
+  if (result != COMM_SUCCESS)
+  {
+    RCLCPP_ERROR(
+      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
+      packet_handler_->getTxRxResult(result));
+  }
+  return static_cast<int32_t>(value);
+}
+
+}  // namespace hardware_controller
+
+PLUGINLIB_EXPORT_CLASS(hardware_controller::DynamixelSystem, hardware_interface::SystemInterface)

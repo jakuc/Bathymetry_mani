@@ -57,11 +57,11 @@ else
 fi
 
 # --- Krok 3: udev rules ---
-echo "[3/4] Instalacja udev rules (U2D2)..."
-cp "$REPO_DIR/udev/99-dynamixel.rules" /etc/udev/rules.d/
+echo "[3/4] Instalacja udev rules (U2D2, echosonda SLD-100, GNSS mosaic-H)..."
+cp "$REPO_DIR/udev/"*.rules /etc/udev/rules.d/
 udevadm control --reload-rules
 udevadm trigger
-echo "    Reguła /dev/u2d2 aktywna."
+echo "    Reguły /dev/u2d2, /dev/echosounder i /dev/gnss aktywne."
 
 # --- Krok 4: Budowa obrazu Docker ---
 echo "[4/4] Budowa obrazu Docker..."

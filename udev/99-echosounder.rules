@@ -1,0 +1,5 @@
+# DeepVision/Satlab SLD-100 echosonda, USB-serial (FTDI FT-X)
+# Vendor 0403, Product 6015 (różny od U2D2 = 6014, więc rozróżnienie jest jednoznaczne)
+# Po podpięciu tworzy /dev/echosounder z uprawnieniami dla wszystkich użytkowników
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6015", \
+    SYMLINK+="echosounder", GROUP="dialout", MODE="0666"

@@ -1,0 +1,101 @@
+<?xml version="1.0"?>
+<!--
+  Blok <ros2_control> dla realnego sprzętu, osobno od opisu kinematyki.
+  Includowany przez bathset.urdf.xacro razem z nietkniętym
+  urdf/xm540_manipulator.urdf z paczki xm540_bringup — dzięki temu zmiana
+  backendu sprzętowego (np. na mock_components do testów bez sprzętu) to
+  tylko podmiana tego jednego pliku, bez ruszania opisu robota.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!--
+    use_servo / use_echosounder: sterują tym, czy dany blok w ogóle trafia do
+    URDF. controller_manager (ta wersja ros2_control) twardo pada (abort całego
+    procesu), jeśli zadeklarowany komponent sprzętowy nie osiągnie stanu
+    "active" przy starcie - a to się dzieje zawsze, gdy dane urządzenie akurat
+    nie jest fizycznie podpięte. Zamiast łapać ten wyjątek, po prostu nie
+    deklarujemy komponentu, którego nie ma - nie ma czego aktywować, nie ma
+    czego crashować.
+  -->
+  <xacro:arg name="use_servo" default="true"/>
+  <xacro:arg name="use_echosounder" default="true"/>
+  <xacro:arg name="use_gnss" default="true"/>
+
+  <xacro:if value="$(arg use_servo)">
+    <ros2_control name="xm540_servo" type="system">
+      <hardware>
+        <plugin>hardware_controller/DynamixelSystem</plugin>
+        <param name="device_port">/dev/u2d2</param>
+        <param name="baud_rate">57600</param>
+      </hardware>
+      <joint name="xm540_joint">
+        <param name="servo_id">1</param>
+        <command_interface name="position"/>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+        <state_interface name="temperature"/>
+      </joint>
+    </ros2_control>
+  </xacro:if>
+
+  <xacro:if value="$(arg use_echosounder)">
+    <ros2_control name="echosounder" type="sensor">
+      <hardware>
+        <plugin>hardware_controller/EchosounderSensor</plugin>
+        <param name="device_port">/dev/echosounder</param>
+        <param name="baud_rate">4800</param>
+      </hardware>
+      <sensor name="echosounder">
+        <state_interface name="range"/>
+        <state_interface name="water_temperature"/>
+      </sensor>
+    </ros2_control>
+  </xacro:if>
+
+  <!--
+    Septentrio mosaic-H (dwuantenowy GNSS: pozycja + heading) po USB CDC-ACM.
+    /dev/gnss = pierwszy port CDC odbiornika (USB1) - patrz udev/99-gnss.rules.
+    Wtyczka sama włącza strumień NMEA GGA+GST+HDT na wskazanym porcie
+    odbiornika (receiver_port/nmea_stream/nmea_rate to parametry komendy
+    setNMEAOutput), więc odbiornik nie wymaga wcześniejszej konfiguracji.
+  -->
+  <xacro:if value="$(arg use_gnss)">
+    <ros2_control name="gnss" type="sensor">
+      <hardware>
+        <plugin>hardware_controller/GnssSensor</plugin>
+        <param name="device_port">/dev/gnss</param>
+        <param name="baud_rate">115200</param>
+        <param name="receiver_port">USB1</param>
+        <param name="nmea_stream">1</param>
+        <param name="nmea_rate">msec100</param>
+        <!--
+          RTK: samo połączenie z casterem NTRIP jest skonfigurowane na stałe w
+          pamięci odbiornika (scripts/gnss_rtk.py configure) - tutaj tylko
+          włączamy podgląd jego stanu, żeby login i hasło do serwisu RTK nie
+          trafiły do repozytorium. status_stream=0 wyłącza podgląd.
+        -->
+        <param name="status_stream">2</param>
+        <param name="status_rate">sec1</param>
+        <param name="ntrip_connection">1</param>
+      </hardware>
+      <sensor name="gnss">
+        <state_interface name="latitude"/>
+        <state_interface name="longitude"/>
+        <state_interface name="altitude"/>
+        <state_interface name="fix_quality"/>
+        <state_interface name="num_satellites"/>
+        <state_interface name="lat_std"/>
+        <state_interface name="lon_std"/>
+        <state_interface name="alt_std"/>
+        <state_interface name="heading"/>
+        <state_interface name="diff_age"/>
+        <state_interface name="station_id"/>
+        <state_interface name="ntrip_status"/>
+        <state_interface name="ntrip_error"/>
+        <state_interface name="data_count"/>
+      </sensor>
+    </ros2_control>
+  </xacro:if>
+
+</robot>

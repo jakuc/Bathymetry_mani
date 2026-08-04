@@ -1,3 +1,8 @@
+# Obraz do pracy z prawdziwym sprzętem (serwo XM540 + echosonda SLD-100, docelowo GPS/IMU).
+# Celowo BEZ Isaac Sim (~25GB, 30-90 min budowy w docker/Dockerfile) - nie jest tu potrzebny,
+# weryfikacja odbywa się na realnym sprzęcie, nie w symulatorze.
+# Ten sam workspace (src/) co obraz symulacyjny - bathset_description i tak referencuje
+# xm540_bringup przez xacro:include, więc oba obrazy muszą widzieć to samo drzewo źródeł.
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -18,9 +23,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# Warstwa 2: ROS2 Humble (Ubuntu 22.04 Jammy)
-# Uwaga: host używa Jazzy (Ubuntu 24.04), kontener używa Humble (Ubuntu 22.04)
-# Kod węzłów ROS2 jest kompatybilny między wersjami
+# Warstwa 2: ROS2 Humble (Ubuntu 22.04 Jammy) + ros2_control + xacro
+# Ten sam dystrybutor co docker/Dockerfile (kontener symulacyjny) - host używa Jazzy,
+# ale to bez znaczenia, build i tak dzieje się tu w środku.
 # =============================================================================
 RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
         -o /usr/share/keyrings/ros-archive-keyring.gpg && \
@@ -28,12 +33,13 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
         http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
         > /etc/apt/sources.list.d/ros2.list && \
     apt-get update && apt-get install -y \
-    ros-humble-desktop \
-    ros-humble-dynamixel-sdk \
-    ros-humble-ros-gz \
+    ros-humble-ros-base \
+    ros-humble-robot-state-publisher \
+    ros-humble-rviz2 \
     ros-humble-tf2-ros \
     ros-humble-tf2-geometry-msgs \
     ros-humble-std-srvs \
+    ros-humble-dynamixel-sdk \
     ros-humble-ros2-control \
     ros-humble-ros2-controllers \
     ros-humble-xacro \
@@ -43,42 +49,22 @@ RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     && rm -rf /var/lib/apt/lists/*
 
 # =============================================================================
-# Warstwa 3: Isaac Sim 4.5.0
-# UWAGA: To jest ~25GB pobierania. Pierwsza budowa trwa 30-90 minut.
-# Warstwa jest cache'owana - kolejne budowy (po zmianach w src/) są szybkie.
-# =============================================================================
-RUN pip3 install "isaacsim[all]==4.5.0.0" --extra-index-url https://pypi.nvidia.com
-
-# =============================================================================
-# Warstwa 4: udev rules
-# Pliki są też kopiowane na hosta przez install.sh
+# Warstwa 3: udev rules (referencyjnie w obrazie; realne symlinki tworzy host)
 # =============================================================================
 COPY udev/99-dynamixel.rules /opt/udev/99-dynamixel.rules
 COPY udev/99-echosounder.rules /opt/udev/99-echosounder.rules
+COPY udev/99-gnss.rules /opt/udev/99-gnss.rules
 
 # =============================================================================
-# Warstwa 5: Pre-built workspace ROS2
-# Budowany w /opt/ros_ws - dostępny jako fallback na nowym sprzęcie
-# bez potrzeby robienia colcon build przez użytkownika
-# Uwaga: package.xml ma ros-jazzy-dynamixel-sdk (błąd nazwy dla Jazzy),
-#        w kontenerze instalujemy ros-humble-dynamixel-sdk przez apt (warstwa 2)
-#        i pomijamy ten klucz w rosdep
-# =============================================================================
-WORKDIR /opt/ros_ws
-COPY src/ src/
-
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
-    colcon build --symlink-install"
-
-# =============================================================================
-# Entrypoint
+# Entrypoint - ten sam co obraz symulacyjny (sourcing workspace, brak /opt/ros_ws
+# prebuild tutaj - kompilacja robiona ręcznie przez użytkownika w /workspace)
 # =============================================================================
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc && \
-    echo "[ -f /opt/ros_ws/install/setup.bash ] && source /opt/ros_ws/install/setup.bash" >> ~/.bashrc && \
-    echo "[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash" >> ~/.bashrc
+    echo "[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash" >> ~/.bashrc && \
+    echo "cb() { colcon build \"\$@\" && source /workspace/install/setup.bash; }" >> ~/.bashrc
 
 WORKDIR /workspace
 

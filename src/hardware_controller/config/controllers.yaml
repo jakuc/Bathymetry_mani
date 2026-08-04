@@ -1,0 +1,46 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 50  # Hz
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    forward_position_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    range_sensor_broadcaster:
+      type: range_sensor_broadcaster/RangeSensorBroadcaster
+
+    temperature_broadcaster:
+      type: hardware_controller/TemperatureBroadcaster
+
+    gnss_broadcaster:
+      type: hardware_controller/GnssBroadcaster
+
+forward_position_controller:
+  ros__parameters:
+    joints:
+      - xm540_joint
+    interface_name: position
+
+range_sensor_broadcaster:
+  ros__parameters:
+    sensor_name: echosounder
+    frame_id: sonar_link
+    # SLD-100 wg specyfikacji producenta: zakres 0.3-100 m.
+    min_range: 0.3
+    max_range: 100.0
+    field_of_view: 0.0
+    radiation_type: 0  # 0 = ultradźwięki
+
+temperature_broadcaster:
+  ros__parameters:
+    sensor_name: echosounder
+    frame_id: sonar_link
+
+gnss_broadcaster:
+  ros__parameters:
+    sensor_name: gnss
+    # Frame anteny głównej mosaic-H; link docelowo w bathset_description,
+    # gdy powstanie pełny model zestawu.
+    frame_id: gnss_link

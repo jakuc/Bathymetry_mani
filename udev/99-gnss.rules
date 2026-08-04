@@ -1,0 +1,28 @@
+# Septentrio mosaic-H (dwuantenowy odbiornik GNSS), USB CDC-ACM
+# Vendor 152a (Thesycon, licencjonowane ID Septentrio), Product 85c0.
+# Odbiornik wystawia dwa porty szeregowe:
+#   interfejs USB 02 -> USB1 odbiornika -> /dev/gnss     (komendy + NMEA, używa GnssSensor)
+#   interfejs USB 04 -> USB2 odbiornika -> /dev/gnss_aux (wolny, np. korekcje RTK w przyszłości)
+# (Dodatkowo urządzenie wystawia ethernet-over-USB: web UI pod http://192.168.3.1)
+#
+# Match przez ENV{ID_*}, nie ATTRS{}: wszystkie ATTRS w jednej regule muszą
+# pochodzić z TEGO SAMEGO rodzica w sysfs, a idVendor/idProduct (urządzenie USB)
+# i bInterfaceNumber (interfejs USB) to różne poziomy - taka reguła nigdy nie
+# pasuje (zweryfikowane: symlink się nie tworzył). Zmienne ID_VENDOR_ID/
+# ID_MODEL_ID/ID_USB_INTERFACE_NUM wystawia builtin usb_id już na poziomie tty.
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="152a", ENV{ID_MODEL_ID}=="85c0", ENV{ID_USB_INTERFACE_NUM}=="02", \
+    SYMLINK+="gnss", GROUP="dialout", MODE="0666"
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="152a", ENV{ID_MODEL_ID}=="85c0", ENV{ID_USB_INTERFACE_NUM}=="04", \
+    SYMLINK+="gnss_aux", GROUP="dialout", MODE="0666"
+
+# Interfejs sieciowy odbiornika (ethernet-over-USB) - po jego pojawieniu się
+# podnosimy udostępnianie internetu, żeby wbudowany klient NTRIP miał jak
+# dojść do castera RTK. Bez tego RTK milknie po każdym repluggu i reboocie.
+# Usługę instaluje: sudo ./scripts/gnss_internet_share.sh install-service
+# (dopóki nie jest zainstalowana, ta reguła jest nieszkodliwa).
+#
+# Tu ATTRS{} jest w porządku, w przeciwieństwie do reguł tty wyżej: idVendor
+# i idProduct siedzą na TYM SAMYM rodzicu (urządzeniu USB), a nie na dwóch
+# różnych poziomach sysfs.
+SUBSYSTEM=="net", ACTION=="add", ATTRS{idVendor}=="152a", ATTRS{idProduct}=="85c0", \
+    TAG+="systemd", ENV{SYSTEMD_WANTS}="gnss-rtk-share.service"

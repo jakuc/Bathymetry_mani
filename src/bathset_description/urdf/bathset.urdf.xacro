@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!--
+  Pełny opis "robota" zestawu batymetrycznego dla realnego sprzętu:
+  kinematyka (nietknięty xm540_bringup/urdf/xm540_manipulator.urdf) +
+  blok ros2_control (xm540.ros2_control.xacro, ta paczka).
+
+  xacro:include wkleja tylko dzieci korzenia includowanego pliku, więc fakt,
+  że xm540_manipulator.urdf sam ma korzeń <robot> nie przeszkadza — liczy się
+  tylko korzeń <robot> poniżej.
+-->
+<robot name="bathset" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:include filename="$(find xm540_bringup)/urdf/xm540_manipulator.urdf" />
+  <xacro:include filename="$(find bathset_description)/urdf/xm540.ros2_control.xacro" />
+
+</robot>

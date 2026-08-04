@@ -1,0 +1,14 @@
+<library path="hardware_controller">
+  <class name="hardware_controller/DynamixelSystem" type="hardware_controller::DynamixelSystem"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>Sterowanie serwem Dynamixel XM540-W270 przez dynamixel_sdk (RS485/U2D2).</description>
+  </class>
+  <class name="hardware_controller/EchosounderSensor" type="hardware_controller::EchosounderSensor"
+         base_class_type="hardware_interface::SensorInterface">
+    <description>Echosonda DeepVision/Satlab SLD-100 — odczyt NMEA 0183 (głębokość, temperatura wody) po USB-serial.</description>
+  </class>
+  <class name="hardware_controller/GnssSensor" type="hardware_controller::GnssSensor"
+         base_class_type="hardware_interface::SensorInterface">
+    <description>Odbiornik GNSS Septentrio mosaic-H (dwuantenowy) — NMEA GGA/GST/HDT po USB CDC, z automatyczną konfiguracją odbiornika.</description>
+  </class>
+</library>

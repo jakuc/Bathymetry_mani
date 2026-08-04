@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>bathset_description</name>
+  <version>0.1.0</version>
+  <description>Opis (URDF/xacro) robota-zestawu batymetrycznego: kinematyka z xm540_bringup + blok ros2_control dla realnego sprzętu.</description>
+  <maintainer email="user@todo.todo">user</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>xm540_bringup</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
