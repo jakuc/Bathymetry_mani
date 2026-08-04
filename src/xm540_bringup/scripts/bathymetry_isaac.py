@@ -37,7 +37,7 @@ _DEFAULT_TILES_DIR      = _PKG_SHARE / "meshes" / "big_lake_simp_tiles"
 _DEFAULT_LAKE_OBJ       = _PKG_SHARE / "meshes" / "big_lake_simp.obj"
 _DEFAULT_WAYPOINTS_DIR  = _PKG_SHARE / "waypoints"
 
-LAKE_TRANSLATE         = (0.0, 0.0, -30.0)
+LAKE_WATER_OBJ_Y       = 3.0     # poziom wody w przestrzeni OBJ; translate_z = -LAKE_WATER_OBJ_Y * lake_scale
 LAKE_ROTATE_X_DEG      = 90.0
 MESH_NATURAL_REDUCTION = 100.0   # OBJ jest pomniejszony 100× względem skali rzeczywistej
 SONAR_RANGE_MIN        = 0.1
@@ -174,14 +174,137 @@ def load_waypoints_csv(path: pathlib.Path) -> list[tuple[float, float]]:
     return waypoints
 
 
-def find_waypoints_for_scale(wp_dir: pathlib.Path, lake_scale: float) -> list[pathlib.Path]:
-    """Zwraca posortowaną listę waypoints_time_*_interp_x{scale}.csv dla danej skali."""
-    scale_str = str(int(lake_scale)) if lake_scale == int(lake_scale) else str(lake_scale)
-    files = sorted(wp_dir.glob(f"waypoints_time_*_interp_x{scale_str}.csv"))
-    print(f"[baseline] Znaleziono {len(files)} plików (interp, x{scale_str}) w {wp_dir}:")
-    for f in files:
-        print(f"  {f.name}")
-    return files
+def generate_boundary_grid(polygon, step_obj: float):
+    """Waypoints jako pary (wejście, wyjście) na każdym wierszu konturu — serpentyna."""
+    from shapely.geometry import LineString, Point
+
+    minx, minz, maxx, maxz = polygon.bounds
+    zs = np.arange(minz + step_obj / 2, maxz, step_obj)
+    waypoints = []
+    for row_idx, z in enumerate(zs):
+        row_line = LineString([(minx - 1.0, z), (maxx + 1.0, z)])
+        isect = polygon.intersection(row_line)
+        if isect.is_empty or isect.geom_type == "Point":
+            continue
+        if isect.geom_type == "LineString":
+            segs = [isect]
+        elif isect.geom_type == "MultiLineString":
+            segs = sorted(isect.geoms, key=lambda s: min(c[0] for c in s.coords))
+        else:
+            continue
+        seg_endpoints = []
+        for seg in segs:
+            coords = sorted(seg.coords, key=lambda c: c[0])
+            seg_endpoints.append((Point(coords[0]), Point(coords[-1])))
+        if row_idx % 2 == 1:
+            seg_endpoints = [(e, s) for s, e in reversed(seg_endpoints)]
+        for start, end in seg_endpoints:
+            waypoints.append(start)
+            waypoints.append(end)
+    return waypoints
+
+
+def path_length_world(waypoints, lake_scale: float) -> float:
+    total = 0.0
+    for i in range(len(waypoints) - 1):
+        dx = (waypoints[i + 1].x - waypoints[i].x) * lake_scale
+        dz = (waypoints[i + 1].y - waypoints[i].y) * lake_scale
+        total += math.sqrt(dx * dx + dz * dz)
+    return total
+
+
+def find_step_for_time(polygon, target_time_s: float, boat_speed: float,
+                       lake_scale: float, tol_frac: float = 0.005) -> list:
+    """Bisection: szuka step_obj tak by długość trasy ≈ target_time_s * boat_speed."""
+    target_dist = target_time_s * boat_speed
+    print(f"[waypoints] Bisection: cel={target_dist:.1f} m  "
+          f"({target_time_s/60:.1f} min × {boat_speed} m/s)")
+
+    minx, minz, maxx, maxz = polygon.bounds
+    step_lo = 0.05 / lake_scale
+    step_hi = min(maxx - minx, maxz - minz) * 0.95
+
+    best_wps   = []
+    best_delta = float("inf")
+
+    for it in range(60):
+        step_mid = (step_lo + step_hi) / 2.0
+        wps = generate_boundary_grid(polygon, step_mid)
+        if not wps:
+            step_hi = step_mid
+            continue
+        dist  = path_length_world(wps, lake_scale)
+        delta = (dist - target_dist) / target_dist
+        print(f"  [{it+1:2d}] step={step_mid*lake_scale:.4f} m  "
+              f"dist={dist:.1f} m  δ={delta*100:+.2f}%  n={len(wps)}")
+        if abs(delta) < abs(best_delta):
+            best_delta = delta
+            best_wps   = wps
+        if abs(delta) <= tol_frac:
+            break
+        if dist > target_dist:
+            step_lo = step_mid
+        else:
+            step_hi = step_mid
+
+    if best_wps:
+        print(f"[waypoints] Wynik: dist={path_length_world(best_wps, lake_scale):.1f} m  "
+              f"n={len(best_wps)}  δ={best_delta*100:+.2f}%")
+    return best_wps
+
+
+def interpolate_waypoints(waypoints, boat_speed: float, sonar_hz: float, lake_scale: float):
+    """Wstawia punkty co boat_speed/sonar_hz metrów wzdłuż każdego odcinka trasy."""
+    from shapely.geometry import Point
+
+    interval_m = boat_speed / sonar_hz
+    result = []
+    for i, p in enumerate(waypoints):
+        result.append(p)
+        if i + 1 >= len(waypoints):
+            break
+        q = waypoints[i + 1]
+        dx = (q.x - p.x) * lake_scale
+        dy = (q.y - p.y) * lake_scale
+        dist = math.sqrt(dx * dx + dy * dy)
+        n_steps = int(dist / interval_m)
+        for k in range(1, n_steps):
+            t = k * interval_m / dist
+            result.append(Point(p.x + t * (q.x - p.x), p.y + t * (q.y - p.y)))
+    print(f"[waypoints] Interpolacja: {len(waypoints)} → {len(result)} wp "
+          f"(co {interval_m:.3f} m)")
+    return result
+
+
+def waypoints_from_time(polygon, lake_scale: float, time_min: float,
+                        boat_speed: float, sonar_hz: float,
+                        do_interpolate: bool,
+                        tol_frac: float) -> list[tuple[float, float]]:
+    """Generuje waypoints przez bisection i zwraca jako listę (world_x, world_y)."""
+    wps_obj = find_step_for_time(polygon, time_min * 60.0, boat_speed, lake_scale, tol_frac)
+    if not wps_obj:
+        return []
+    if do_interpolate:
+        wps_obj = interpolate_waypoints(wps_obj, boat_speed, sonar_hz, lake_scale)
+    return [(lake_scale * p.x, -lake_scale * p.y) for p in wps_obj]
+
+
+def extract_scale_from_filename(path: pathlib.Path) -> float | None:
+    """Wyciąga skalę z nazwy pliku (*_x{N}.csv). Zwraca None jeśli nie znaleziono."""
+    m = re.search(r'_x(\d+(?:\.\d+)?)\.csv$', path.name)
+    return float(m.group(1)) if m else None
+
+
+def find_all_waypoints_grouped(wp_dir: pathlib.Path) -> dict[float, list[pathlib.Path]]:
+    """Zwraca {scale: [files]} dla wszystkich waypoints_time_*_interp_x*.csv w katalogu."""
+    groups: dict[float, list[pathlib.Path]] = {}
+    for f in sorted(wp_dir.glob("waypoints_time_*_interp_x*.csv")):
+        scale = extract_scale_from_filename(f)
+        if scale is not None:
+            groups.setdefault(scale, []).append(f)
+    print(f"[baseline] Znaleziono {sum(len(v) for v in groups.values())} plików "
+          f"dla {len(groups)} skal w {wp_dir}: {sorted(groups)}")
+    return groups
 
 
 # ---------------------------------------------------------------------------
@@ -207,22 +330,32 @@ def build_cone_dirs(beam_half_deg: float) -> list:
     return [carb.Float3(float(r[0]), float(r[1]), float(r[2])) for r in rays]
 
 
-def cone_raycast(physx, origin: carb.Float3, dirs: list) -> float:
-    min_d = SONAR_RANGE_MAX
+def cone_raycast(physx, origin: carb.Float3, dirs: list) -> float | None:
+    min_d = float("inf")
     for d in dirs:
         hit = physx.raycast_closest(origin, d, SONAR_RANGE_MAX)
         if hit["hit"]:
             min_d = min(min_d, float(hit["distance"]))
-    return max(SONAR_RANGE_MIN, min_d)
+    if min_d == float("inf") or min_d < SONAR_RANGE_MIN:
+        return None
+    return min_d
 
 
 # ---------------------------------------------------------------------------
 
 def _apply_transform(xf: UsdGeom.Xformable, lake_scale: float) -> None:
     xf.ClearXformOpOrder()
-    xf.AddTranslateOp().Set(Gf.Vec3d(*LAKE_TRANSLATE))
+    xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -LAKE_WATER_OBJ_Y * lake_scale))
     xf.AddRotateXOp().Set(LAKE_ROTATE_X_DEG)
     xf.AddScaleOp().Set(Gf.Vec3f(lake_scale, lake_scale, lake_scale))
+
+
+def rescale_lake(stage, n_tiles: int, new_scale: float) -> None:
+    """Aktualizuje ScaleOp na istniejących primach jeziora."""
+    for i in range(n_tiles):
+        prim = stage.GetPrimAtPath(f"/World/lake/tile_{i:02d}")
+        _apply_transform(UsdGeom.Xformable(prim), new_scale)
+    print(f"[bathymetry_isaac] Przeskalowano jezioro → ×{new_scale:g}")
 
 
 def add_lake(stage, tiles_dir: pathlib.Path, lake_scale: float) -> None:
@@ -254,8 +387,10 @@ def save_pcd(pts: np.ndarray, path: pathlib.Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _init_world(tiles_dir: pathlib.Path, lake_scale: float):
-    """Ładuje jezioro do Isaac Sim i zwraca (physx, cone_dirs). Wywołać raz."""
-    print(f"\n[bathymetry_isaac] Ładowanie kafelków: {tiles_dir}")
+    """Ładuje jezioro do Isaac Sim. Zwraca (world, stage, physx, cone_dirs, n_tiles). Wywołać raz."""
+    tile_files = sorted(tiles_dir.glob("*.obj"))
+    n_tiles    = len(tile_files)
+    print(f"\n[bathymetry_isaac] Ładowanie {n_tiles} kafelków: {tiles_dir}")
     world = World(stage_units_in_meters=1.0)
     stage = omni.usd.get_context().get_stage()
     add_lake(stage, tiles_dir, lake_scale)
@@ -263,7 +398,7 @@ def _init_world(tiles_dir: pathlib.Path, lake_scale: float):
     world.step(render=False)
     physx     = get_physx_scene_query_interface()
     cone_dirs = build_cone_dirs(SONAR_BEAM_HALF_DEG)
-    return physx, cone_dirs
+    return world, stage, physx, cone_dirs, n_tiles
 
 
 def _scan(waypoints: list[tuple[float, float]], physx, cone_dirs: list,
@@ -278,7 +413,7 @@ def _scan(waypoints: list[tuple[float, float]], physx, cone_dirs: list,
     for i, (wx, wy) in enumerate(waypoints):
         origin = carb.Float3(wx, wy, boat_z)
         d      = cone_raycast(physx, origin, cone_dirs)
-        if d >= SONAR_RANGE_MAX:
+        if d is None:
             misses += 1
             continue
         world_z = boat_z - d
@@ -300,23 +435,22 @@ def _scan(waypoints: list[tuple[float, float]], physx, cone_dirs: list,
 
 def _save(results: list[tuple], out_dir: pathlib.Path, stem: str,
           save_csv_flag: bool) -> None:
-    pts      = np.array([[r[0], r[1], r[2]] for r in results], dtype=np.float32)
-    out_path = out_dir / stem
+    pts = np.array([[r[0], r[1], r[2]] for r in results], dtype=np.float32)
 
-    pcd_path = out_path.with_suffix(".pcd")
+    pcd_path = out_dir / (stem + ".pcd")
     save_pcd(pts, pcd_path)
     print(f"[bathymetry_isaac] PCD → {pcd_path}")
 
     try:
         import trimesh
-        ply_path = out_path.with_suffix(".ply")
+        ply_path = out_dir / (stem + ".ply")
         trimesh.PointCloud(pts).export(str(ply_path))
         print(f"[bathymetry_isaac] PLY → {ply_path}")
     except ImportError:
         pass
 
     if save_csv_flag:
-        csv_path = out_path.with_suffix(".csv")
+        csv_path = out_dir / (stem + ".csv")
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=["world_x", "world_y", "world_z", "depth"])
             writer.writeheader()
@@ -326,55 +460,127 @@ def _save(results: list[tuple], out_dir: pathlib.Path, stem: str,
 
 
 # ---------------------------------------------------------------------------
+def _stem_from_wp_path(wp_path: pathlib.Path, lake_scale: float) -> str:
+    scale_str = str(int(lake_scale)) if lake_scale == int(lake_scale) else str(lake_scale)
+    info = (wp_path.stem
+            .removeprefix("waypoints_time_")
+            .removesuffix(f"_x{scale_str}")
+            .removesuffix("_interp"))
+    return f"baseline_x{lake_scale:g}_{info}"
+
+
 def main(tiles_dir: pathlib.Path,
          step_m: float, n_grid: int | None, water_y: str, boat_z: float,
          mesh_reduction: float,
          out_dir: pathlib.Path, time_min: float | None, save_csv_flag: bool,
          waypoints_file: pathlib.Path | None,
-         waypoints_dir: pathlib.Path | None) -> None:
-
-    lake_scale = MESH_NATURAL_REDUCTION / mesh_reduction
-    print(f"[bathymetry_isaac] Skala mesha: {mesh_reduction}× pomniejszony → ×{lake_scale:.4g} w Isaac Sim")
-
-    # Zbierz listę plików do przetworzenia
-    if waypoints_dir is not None:
-        wp_files = find_waypoints_for_scale(waypoints_dir, lake_scale)
-        if not wp_files:
-            scale_str = str(int(lake_scale)) if lake_scale == int(lake_scale) else str(lake_scale)
-            print(f"BŁĄD: brak plików waypoints_time_*_interp_x{scale_str}.csv w {waypoints_dir}",
-                  file=sys.stderr)
-            sys.exit(1)
-    elif waypoints_file is not None:
-        wp_files = [waypoints_file]
-    else:
-        wp_files = None   # generuj z parametrów
-
-    # Inicjalizacja sceny Isaac Sim — tylko raz
-    physx, cone_dirs = _init_world(tiles_dir, lake_scale)
+         waypoints_dir: pathlib.Path | None,
+         params_csv: pathlib.Path | None = None,
+         boat_speed: float = 1.0,
+         sonar_hz: float = 20.0,
+         tol_frac: float = 0.005) -> None:
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    if wp_files is not None:
-        for i, wp_path in enumerate(wp_files):
-            print(f"\n{'='*60}")
-            print(f"[baseline] Plik {i+1}/{len(wp_files)}: {wp_path.name}")
-            print(f"{'='*60}")
-            waypoints  = load_waypoints_csv(wp_path)
-            results    = _scan(waypoints, physx, cone_dirs, boat_z)
-            scale_str  = str(int(lake_scale)) if lake_scale == int(lake_scale) else str(lake_scale)
-            info       = wp_path.stem.removeprefix("waypoints_time_").removesuffix(f"_x{scale_str}").removesuffix("_interp")
-            stem       = f"baseline_x{lake_scale:g}_{info}_{ts}"
-            _save(results, out_dir, stem, save_csv_flag)
-    else:
-        # Tryb legacy: generuj waypoints na podstawie parametrów
-        if time_min is None:
-            print("BŁĄD: podaj --time, --waypoints-file lub --waypoints-dir", file=sys.stderr)
-            sys.exit(1)
-        waypoints = build_waypoints(step_m, n_grid, water_y, boat_z, lake_scale)
-        results   = _scan(waypoints, physx, cone_dirs, boat_z)
-        stem      = f"baseline_x{lake_scale:g}_wp{len(waypoints)}_{time_min:g}min_{ts}"
-        _save(results, out_dir, stem, save_csv_flag)
+    # ── tryb --params-csv: generuj waypoints z tabeli lake_scale+time_min ──
+    if params_csv is not None:
+        with open(params_csv) as f:
+            rows = list(csv.DictReader(f))
+        rows_sorted = sorted(rows, key=lambda r: float(r["lake_scale"]))
+        print(f"[bathymetry_isaac] --params-csv: {len(rows_sorted)} skanów z {params_csv}")
 
+        mesh = load_mesh(_DEFAULT_LAKE_OBJ)
+        water_y_val = float(mesh.bounds[1][1])
+        polygon = get_contour_polygon(mesh, water_y_val)
+
+        first_scale = float(rows_sorted[0]["lake_scale"])
+        world, stage, physx, cone_dirs, n_tiles = _init_world(tiles_dir, first_scale)
+        prev_scale = first_scale
+
+        for scan_idx, row in enumerate(rows_sorted):
+            lake_scale  = float(row["lake_scale"])
+            t_min       = float(row["time_min"])
+            speed       = float(row.get("speed",       boat_speed))
+            do_interp   = bool(int(row.get("interpolate", 1)))
+            s_hz        = float(row.get("sonar_hz",    sonar_hz))
+
+            print(f"\n{'='*60}")
+            print(f"[bathymetry_isaac] Skan {scan_idx+1}/{len(rows_sorted)}  "
+                  f"×{lake_scale:g}  time={t_min:.1f} min")
+            print(f"{'='*60}")
+
+            if lake_scale != prev_scale:
+                rescale_lake(stage, n_tiles, lake_scale)
+                world.reset()
+                world.step(render=False)
+                prev_scale = lake_scale
+
+            waypoints = waypoints_from_time(polygon, lake_scale, t_min,
+                                            speed, s_hz, do_interp, tol_frac)
+            if not waypoints:
+                print(f"WARN: brak waypointów dla ×{lake_scale:g} — pomijam", file=sys.stderr)
+                continue
+
+            results    = _scan(waypoints, physx, cone_dirs, boat_z)
+            interp_str = "_interp" if do_interp else ""
+            stem       = f"baseline_x{lake_scale:g}_{t_min:.1f}min{interp_str}_{ts}"
+            _save(results, out_dir, stem, save_csv_flag)
+
+        simulation_app.close()
+        return
+
+    # ── tryb --waypoints-dir: auto-wykryj skale z nazw plików ─────────────
+    if waypoints_dir is not None:
+        groups = find_all_waypoints_grouped(waypoints_dir)
+        if not groups:
+            print(f"BŁĄD: brak plików waypoints_time_*_interp_x*.csv w {waypoints_dir}",
+                  file=sys.stderr)
+            sys.exit(1)
+        scales = sorted(groups.keys())
+        world, stage, physx, cone_dirs, n_tiles = _init_world(tiles_dir, scales[0])
+        for scale_idx, lake_scale in enumerate(scales):
+            print(f"\n{'='*60}")
+            print(f"[bathymetry_isaac] Skala ×{lake_scale:g}  ({scale_idx+1}/{len(scales)})")
+            print(f"{'='*60}")
+            if scale_idx > 0:
+                rescale_lake(stage, n_tiles, lake_scale)
+                world.reset()
+                world.step(render=False)
+            for wp_path in groups[lake_scale]:
+                waypoints = load_waypoints_csv(wp_path)
+                results   = _scan(waypoints, physx, cone_dirs, boat_z)
+                stem      = _stem_from_wp_path(wp_path, lake_scale) + f"_{ts}"
+                _save(results, out_dir, stem, save_csv_flag)
+        simulation_app.close()
+        return
+
+    # ── tryb --waypoints-file: jeden plik, skala z nazwy lub --mesh-reduction
+    if waypoints_file is not None:
+        lake_scale = extract_scale_from_filename(waypoints_file)
+        if lake_scale is None:
+            lake_scale = MESH_NATURAL_REDUCTION / mesh_reduction
+            print(f"[bathymetry_isaac] Skala z --mesh-reduction: ×{lake_scale:.4g}")
+        else:
+            print(f"[bathymetry_isaac] Skala z nazwy pliku: ×{lake_scale:g}")
+        world, stage, physx, cone_dirs, n_tiles = _init_world(tiles_dir, lake_scale)
+        waypoints = load_waypoints_csv(waypoints_file)
+        results   = _scan(waypoints, physx, cone_dirs, boat_z)
+        stem      = _stem_from_wp_path(waypoints_file, lake_scale) + f"_{ts}"
+        _save(results, out_dir, stem, save_csv_flag)
+        simulation_app.close()
+        return
+
+    # ── tryb legacy: generuj waypoints z parametrów ────────────────────────
+    if time_min is None:
+        print("BŁĄD: podaj --time, --waypoints-file lub --waypoints-dir", file=sys.stderr)
+        sys.exit(1)
+    lake_scale = MESH_NATURAL_REDUCTION / mesh_reduction
+    print(f"[bathymetry_isaac] Tryb legacy. Skala: ×{lake_scale:.4g}")
+    world, stage, physx, cone_dirs, n_tiles = _init_world(tiles_dir, lake_scale)
+    waypoints = build_waypoints(step_m, n_grid, water_y, boat_z, lake_scale)
+    results   = _scan(waypoints, physx, cone_dirs, boat_z)
+    stem      = f"baseline_x{lake_scale:g}_wp{len(waypoints)}_{time_min:.1f}min_{ts}"
+    _save(results, out_dir, stem, save_csv_flag)
     simulation_app.close()
 
 
@@ -415,12 +621,22 @@ if __name__ == "__main__":
                           "waypointów (tryb legacy bez --waypoints-file/--waypoints-dir)")
     sim.add_argument("--csv",   action="store_true",
                      help="Zapisz wyniki do CSV oprócz PCD/PLY")
+    sim.add_argument("--params-csv", type=pathlib.Path, default=None,
+                     help="CSV z parametrami skanów (kolumny: lake_scale, time_min; opcjonalne: "
+                          "speed, interpolate, sonar_hz). Każdy wiersz = jeden skan baseline. "
+                          "Nadpisuje --waypoints-file/--waypoints-dir.")
+    sim.add_argument("--speed",    type=float, default=1.0,
+                     help="Prędkość łódki [m/s] używana przy --params-csv (domyślnie 1.0)")
+    sim.add_argument("--sonar-hz", type=float, default=20.0,
+                     help="Częstotliwość sonaru [Hz] przy --params-csv (domyślnie 20.0)")
+    sim.add_argument("--step-tol", type=float, default=0.5,
+                     help="Tolerancja bisection [%%] przy --params-csv (domyślnie 0.5)")
 
     args = parser.parse_args()
 
     # Jeśli --waypoints-dir nie podano explicite, użyj domyślnego katalogu gdy nie ma --waypoints-file
     wp_dir = args.waypoints_dir
-    if wp_dir is None and args.waypoints_file is None:
+    if wp_dir is None and args.waypoints_file is None and args.params_csv is None:
         wp_dir = _DEFAULT_WAYPOINTS_DIR
 
     main(
@@ -435,4 +651,8 @@ if __name__ == "__main__":
         save_csv_flag  = args.csv,
         waypoints_file = args.waypoints_file,
         waypoints_dir  = wp_dir,
+        params_csv     = args.params_csv,
+        boat_speed     = args.speed,
+        sonar_hz       = args.sonar_hz,
+        tol_frac       = args.step_tol / 100.0,
     )

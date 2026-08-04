@@ -82,6 +82,12 @@ def parse_args():
                         "Wymaga --speed i --sonar-hz.")
     p.add_argument("--sonar-hz", type=float, default=20.0,
                    help="Częstotliwość sonaru [Hz] używana przy --interpolate (domyślnie 20.0)")
+    p.add_argument("--params-csv", type=pathlib.Path, default=None,
+                   help="CSV z tabelą parametrów (kolumny: lake_scale, time_min; opcjonalne: "
+                        "speed, interpolate, sonar_hz, boat_z). Każdy wiersz = jedno wywołanie. "
+                        "Nadpisuje --time, --lake-scale i inne tryby.")
+    p.add_argument("--out-dir", type=pathlib.Path, default=WAYPOINTS_DIR,
+                   help=f"Katalog wyjściowy (domyślnie: {WAYPOINTS_DIR})")
     return p.parse_args()
 
 
@@ -359,8 +365,8 @@ def save_csv(waypoints, boat_z: float, output: pathlib.Path):
     print(f"\nZapisano {len(waypoints)} waypointów → {output}")
 
 
-def save_preview(polygon, waypoints, output_csv: pathlib.Path):
-    """Zapisuje widok z góry (PNG) obok pliku CSV."""
+def save_preview(polygon, waypoints, output_csv: pathlib.Path, lake_scale: float = 1.0):
+    """Zapisuje widok z góry (PNG) obok pliku CSV. Współrzędne w przestrzeni world (× lake_scale)."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -375,20 +381,21 @@ def save_preview(polygon, waypoints, output_csv: pathlib.Path):
 
     geoms = list(polygon.geoms) if isinstance(polygon, MultiPolygon) else [polygon]
     for geom in geoms:
-        xs, zs = geom.exterior.xy
+        xs = [x * lake_scale for x in geom.exterior.xy[0]]
+        zs = [z * lake_scale for z in geom.exterior.xy[1]]
         ax.fill(xs, zs, alpha=0.2, color="steelblue")
         ax.plot(xs, zs, color="steelblue", linewidth=1)
 
     if waypoints:
-        wx = [p.x for p in waypoints]
-        wz = [p.y for p in waypoints]
+        wx = [p.x * lake_scale for p in waypoints]
+        wz = [p.y * lake_scale for p in waypoints]
         ax.plot(wx, wz, color="orange", linewidth=0.8, alpha=0.8, zorder=4, label="trasa")
         ax.scatter(wx, wz, s=10, color="red", zorder=5, label=f"waypoints (n={len(waypoints)})")
         ax.scatter([wx[0]], [wz[0]], s=60, color="green",  zorder=6, label="start")
         ax.scatter([wx[-1]], [wz[-1]], s=60, color="black", zorder=6, label="koniec")
 
-    ax.set_xlabel("OBJ X [m]")
-    ax.set_ylabel("OBJ Z [m]")
+    ax.set_xlabel("World X [m]")
+    ax.set_ylabel("World Y [m]")
     ax.set_title(output_csv.stem)
     ax.set_aspect("equal")
     ax.legend(fontsize=8)
@@ -398,6 +405,42 @@ def save_preview(polygon, waypoints, output_csv: pathlib.Path):
     fig.savefig(png_path, dpi=150)
     plt.close(fig)
     print(f"Podgląd zapisany → {png_path}")
+
+
+def _generate_one(polygon, lake_scale: float, time_min: float, speed: float,
+                  interpolate: bool, sonar_hz: float, boat_z: float,
+                  all_points: bool, tol_frac: float,
+                  out_dir: pathlib.Path = WAYPOINTS_DIR) -> None:
+    """Generuje i zapisuje waypoints dla jednej kombinacji (lake_scale, time_min).
+    Aktualizuje globalne LAKE_SCALE i LAKE_TRANSLATE_Z przed wywołaniem bisection."""
+    global LAKE_SCALE, LAKE_TRANSLATE_Z
+    LAKE_SCALE = lake_scale
+    LAKE_TRANSLATE_Z = -lake_scale * 3.0
+
+    print(f"\n{'='*60}")
+    print(f"Generowanie: skala ×{lake_scale:g}  czas={time_min:.1f} min  prędkość={speed} m/s")
+    print(f"{'='*60}")
+
+    _, waypoints = find_step_for_time(polygon, time_min * 60.0, speed, tol_frac, all_points)
+    if not waypoints:
+        print(f"BŁĄD: brak waypointów dla skali ×{lake_scale:g} time={time_min:.1f} — pomijam",
+              file=sys.stderr)
+        return
+
+    if interpolate:
+        waypoints = interpolate_waypoints(waypoints, speed, sonar_hz)
+
+    area_world = polygon.area * (lake_scale ** 2)
+    print(f"Gęstość: 1 waypoint / {area_world/len(waypoints):.1f} m²")
+
+    scale_str  = str(int(lake_scale)) if lake_scale == int(lake_scale) else str(lake_scale)
+    interp_str = "_interp" if interpolate else ""
+    stem = f"waypoints_time_{time_min:.1f}min_{speed}mps{interp_str}_x{scale_str}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / (stem + ".csv")
+
+    save_csv(waypoints, boat_z, out)
+    save_preview(polygon, waypoints, out, lake_scale)
 
 
 def _output_path(args, time_val=None) -> pathlib.Path:
@@ -465,6 +508,28 @@ def main():
     area_world = polygon.area * (LAKE_SCALE ** 2)
     print(f"Powierzchnia jeziora: ~{area_world:.0f} m²  (~{area_world/1e6:.3f} km²)")
 
+    # ── tryb --params-csv ──────────────────────────────────────────────────────
+    if args.params_csv is not None:
+        import csv as _csv
+        tol_frac = args.step_tol / 100.0
+        with open(args.params_csv) as f:
+            rows = list(_csv.DictReader(f))
+        print(f"\n[params-csv] {len(rows)} wierszy do wygenerowania: {args.params_csv}")
+        for row in rows:
+            _generate_one(
+                polygon    = polygon,
+                lake_scale = float(row['lake_scale']),
+                time_min   = float(row['time_min']),
+                speed      = float(row.get('speed',      args.speed)),
+                interpolate= bool(int(row.get('interpolate', 1))),
+                sonar_hz   = float(row.get('sonar_hz',   args.sonar_hz)),
+                boat_z     = float(row.get('boat_z',     args.boat_z)),
+                all_points = args.all_points,
+                tol_frac   = tol_frac,
+                out_dir    = args.out_dir,
+            )
+        return
+
     # ── tryb --time: pętla po wartościach ──────────────────────────────────────
     if args.time is not None:
         if args.speed is None:
@@ -488,7 +553,7 @@ def main():
             out = args.output if (args.output is not None and len(time_values) == 1) \
                   else _output_path(args, time_val)
             save_csv(waypoints, args.boat_z, out)
-            save_preview(polygon, waypoints, out)
+            save_preview(polygon, waypoints, out, LAKE_SCALE)
         return
 
     # ── tryb --step / --n-grid ──────────────────────────────────────────────────
@@ -518,7 +583,7 @@ def main():
     print(f"Gęstość: 1 waypoint / {area_world/len(waypoints):.1f} m²")
     out = args.output if args.output is not None else _output_path(args)
     save_csv(waypoints, args.boat_z, out)
-    save_preview(polygon, waypoints, out)
+    save_preview(polygon, waypoints, out, LAKE_SCALE)
 
 
 if __name__ == "__main__":

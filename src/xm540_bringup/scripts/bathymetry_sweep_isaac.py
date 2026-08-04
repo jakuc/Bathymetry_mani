@@ -38,133 +38,32 @@ from ament_index_python.packages import get_package_share_directory
 # ---------------------------------------------------------------------------
 _PKG_SHARE         = pathlib.Path(get_package_share_directory("xm540_bringup"))
 _DEFAULT_TILES_DIR = _PKG_SHARE / "meshes" / "big_lake_simp_tiles"
-_DEFAULT_LAKE_OBJ  = _PKG_SHARE / "meshes" / "big_lake_simp.obj"
 
-LAKE_TRANSLATE         = (0.0, 0.0, -30.0)
-LAKE_ROTATE_X_DEG      = 90.0
+LAKE_WATER_OBJ_Y  = 3.0   # poziom wody w przestrzeni OBJ; translate_z = -LAKE_WATER_OBJ_Y * lake_scale
+LAKE_ROTATE_X_DEG = 90.0
 MESH_NATURAL_REDUCTION = 100.0   # OBJ jest pomniejszony 100× względem skali rzeczywistej
 SONAR_RANGE_MIN        = 0.1
 SONAR_RANGE_MAX        = 500.0
-SONAR_BEAM_HALF_DEG    = 1.0
+SONAR_BEAM_HALF_DEG    = 0.0   # 0 = single ray (jak w isaac_sim.yaml)
+
+# Kalibracja czasu sweepowania: 7 min na waypoint przy step_deg=2°, range_deg=90° (91²=8281 pozycji)
+_SWEEP_TIME_REF_MIN  = 7.0
+_RAYS_PER_WP_REF     = 91 * 91
 
 
 # ---------------------------------------------------------------------------
-# Generowanie waypointów (przeniesione z generate_waypoints.py)
+# Waypoints z CSV
 # ---------------------------------------------------------------------------
 
-def load_mesh(path: pathlib.Path):
-    try:
-        import trimesh
-    except ImportError:
-        print("BŁĄD: brak trimesh. Zainstaluj: pip install trimesh", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[waypoints] Wczytywanie mesha: {path}")
-    mesh = trimesh.load(str(path), force="mesh")
-    print(f"[waypoints]   Wierzchołki: {len(mesh.vertices):,}  Trójkąty: {len(mesh.faces):,}")
-    return mesh
-
-
-def get_contour_polygon(mesh, water_y: float, grid_size: int = 1024):
-    """Kontur jeziora z rzutu wierzchołków poniżej water_y na płaszczyznę XZ (raster)."""
-    from scipy.ndimage import binary_closing, binary_fill_holes
-
-    print(f"[waypoints] Kontur jeziora (raster Y < {water_y:.4f}, siatka {grid_size}×{grid_size})")
-
-    verts = mesh.vertices[mesh.vertices[:, 1] < water_y]
-    if len(verts) == 0:
-        print("BŁĄD: brak wierzchołków poniżej water_y.", file=sys.stderr)
-        sys.exit(1)
-
-    xs, zs = verts[:, 0], verts[:, 2]
-    x_min, x_max = xs.min(), xs.max()
-    z_min, z_max = zs.min(), zs.max()
-
-    xi = np.clip(((xs - x_min) / (x_max - x_min) * (grid_size - 1)).astype(int), 0, grid_size - 1)
-    zi = np.clip(((zs - z_min) / (z_max - z_min) * (grid_size - 1)).astype(int), 0, grid_size - 1)
-    grid = np.zeros((grid_size, grid_size), dtype=bool)
-    grid[zi, xi] = True
-
-    closing_px = max(2, grid_size // 100)
-    grid = binary_closing(grid, iterations=closing_px)
-    grid = binary_fill_holes(grid)
-
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots()
-    cs = ax.contour(grid.astype(float), levels=[0.5])
-    paths = cs.collections[0].get_paths()
-    plt.close(fig)
-
-    if not paths:
-        print("BŁĄD: contour nie zwrócił żadnej ścieżki.", file=sys.stderr)
-        sys.exit(1)
-
-    main_path = max(paths, key=lambda p: len(p.vertices))
-    pix = main_path.vertices
-
-    obj_x = pix[:, 0] / (grid_size - 1) * (x_max - x_min) + x_min
-    obj_z = pix[:, 1] / (grid_size - 1) * (z_max - z_min) + z_min
-
-    from shapely.geometry import Polygon as ShapelyPolygon
-    lake = ShapelyPolygon(zip(obj_x, obj_z))
-    print(f"[waypoints] Powierzchnia konturu (OBJ): {lake.area:.2f}")
-    return lake
-
-
-def generate_grid(polygon, step_obj: float):
-    """Siatka punktów wewnątrz konturu, serpentyna wzdłuż X. Zwraca listę shapely.Point."""
-    from shapely.geometry import Point
-
-    minx, minz, maxx, maxz = polygon.bounds
-    xs = np.arange(minx + step_obj / 2, maxx, step_obj)
-    zs = np.arange(minz + step_obj / 2, maxz, step_obj)
-
+def load_waypoints_csv(path: pathlib.Path, scale: float) -> list[tuple[float, float]]:
+    """Wczytuje waypoints z CSV (skala x1) i skaluje współrzędne przez scale."""
     waypoints = []
-    for col_idx, x in enumerate(xs):
-        col = [Point(x, z) for z in zs if polygon.contains(Point(x, z))]
-        if col_idx % 2 == 1:
-            col = col[::-1]
-        waypoints.extend(col)
-
-    print(f"[waypoints] Waypointów wewnątrz konturu: {len(waypoints):,}")
-    return waypoints
-
-
-def build_waypoints(step_m: float, n_grid: int | None,
-                    water_y_arg: str, boat_z: float,
-                    lake_scale: float) -> list[tuple[float, float]]:
-    """Generuje listę (world_x, world_y) — punkty trasy łódki."""
-    mesh = load_mesh(_DEFAULT_LAKE_OBJ)
-
-    if water_y_arg == "auto":
-        water_y = float(mesh.bounds[1][1])
-        print(f"[waypoints] Poziom wody (auto): Y = {water_y:.4f}")
-    else:
-        water_y = float(water_y_arg)
-
-    polygon = get_contour_polygon(mesh, water_y)
-
-    if n_grid is not None:
-        minx, minz, maxx, maxz = polygon.bounds
-        step_obj = min((maxx - minx), (maxz - minz)) / n_grid
-        print(f"[waypoints] Tryb --n-grid {n_grid}: krok OBJ = {step_obj:.4f}")
-    else:
-        step_obj = step_m / lake_scale
-        print(f"[waypoints] Krok siatki: {step_m} m = {step_obj:.4f} OBJ")
-
-    pts = generate_grid(polygon, step_obj)
-    if not pts:
-        print("BŁĄD: brak waypointów — sprawdź --water-y i --step", file=sys.stderr)
-        sys.exit(1)
-
-    # Transformacja OBJ(x, z) → Isaac Sim world(x, y)
-    waypoints = [(lake_scale * p.x, -lake_scale * p.y) for p in pts]
-
-    area_world = polygon.area * (lake_scale ** 2)
-    print(f"[waypoints] Powierzchnia jeziora: ~{area_world:.0f} m²  "
-          f"gęstość: 1 wp / {area_world/len(waypoints):.1f} m²")
+    with open(path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            waypoints.append((float(row['world_x']) * scale,
+                              float(row['world_y']) * scale))
+    print(f"[sweep_isaac] Załadowano {len(waypoints)} waypointów → ×{scale:g}")
     return waypoints
 
 
@@ -184,8 +83,10 @@ def fk_directions_all(theta_z_rad: np.ndarray, theta_y_rad: np.ndarray) -> np.nd
 
 
 def build_cone_offsets(beam_half_deg: float) -> np.ndarray:
-    """Prekomputuje 37 offsetów stożka wokół [0,0,-1] jako macierz (37, 3)."""
+    """Prekomputuje offsety stożka wokół [0,0,-1]. Gdy beam_half_deg=0: jeden promień."""
     d = np.array([0.0, 0.0, -1.0])
+    if beam_half_deg == 0.0:
+        return np.array([d])
     u = np.array([1.0, 0.0,  0.0])
     v = np.array([0.0, 1.0,  0.0])
 
@@ -221,20 +122,22 @@ def apply_cone(central_dir: np.ndarray, offsets: np.ndarray) -> list:
     return [carb.Float3(float(r[0]), float(r[1]), float(r[2])) for r in rotated]
 
 
-def cone_raycast(physx, origin: carb.Float3, dirs: list) -> float:
-    min_d = SONAR_RANGE_MAX
+def cone_raycast(physx, origin: carb.Float3, dirs: list) -> float | None:
+    min_d = float("inf")
     for d in dirs:
         hit = physx.raycast_closest(origin, d, SONAR_RANGE_MAX)
         if hit["hit"]:
             min_d = min(min_d, float(hit["distance"]))
-    return max(SONAR_RANGE_MIN, min_d)
+    if min_d == float("inf") or min_d < SONAR_RANGE_MIN:
+        return None
+    return min_d
 
 
 # ---------------------------------------------------------------------------
 
 def _apply_transform(xf: UsdGeom.Xformable, lake_scale: float) -> None:
     xf.ClearXformOpOrder()
-    xf.AddTranslateOp().Set(Gf.Vec3d(*LAKE_TRANSLATE))
+    xf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, -LAKE_WATER_OBJ_Y * lake_scale))
     xf.AddRotateXOp().Set(LAKE_ROTATE_X_DEG)
     xf.AddScaleOp().Set(Gf.Vec3f(lake_scale, lake_scale, lake_scale))
 
@@ -250,6 +153,14 @@ def add_lake(stage, tiles_dir: pathlib.Path, lake_scale: float) -> None:
         _apply_transform(UsdGeom.Xformable(prim), lake_scale)
         UsdPhysics.CollisionAPI.Apply(prim)
     print(f"[sweep_isaac] Załadowano {len(tile_files)} kafelków kolizyjnych.")
+
+
+def rescale_lake(stage, n_tiles: int, new_scale: float) -> None:
+    """Aktualizuje ScaleOp na istniejących primach jeziora (bez przeładowywania OBJ)."""
+    for i in range(n_tiles):
+        prim = stage.GetPrimAtPath(f"/World/lake/tile_{i:02d}")
+        _apply_transform(UsdGeom.Xformable(prim), new_scale)
+    print(f"[sweep_isaac] Przeskalowano jezioro → ×{new_scale:g}")
 
 
 def save_pcd(pts: np.ndarray, path: pathlib.Path) -> None:
@@ -272,159 +183,221 @@ def build_sweep_angles(range_deg: float, step_deg: float) -> list:
 
 # ---------------------------------------------------------------------------
 def main(tiles_dir: pathlib.Path,
-         step_m: float, n_grid: int | None, water_y: str, boat_z: float,
-         mesh_reduction: float,
-         out_dir: pathlib.Path, range_deg: float, step_deg: float,
-         sweep_z: bool, time_min: float, save_csv_flag: bool) -> None:
+         scan_specs: list[dict],
+         boat_z: float,
+         out_dir: pathlib.Path,
+         range_deg: float,
+         sweep_z: bool,
+         boat_speed: float,
+         save_csv_flag: bool) -> None:
+    """scan_specs: lista dict z kluczami scale, waypoints_file, step_deg."""
 
-    lake_scale = MESH_NATURAL_REDUCTION / mesh_reduction
-    print(f"[sweep_isaac] Skala mesha: {mesh_reduction}× pomniejszony → ×{lake_scale:.4g} w Isaac Sim")
-
-    # 1. Generuj waypoints
-    waypoints = build_waypoints(step_m, n_grid, water_y, boat_z, lake_scale)
-
-    # 2. Inicjalizacja sceny Isaac Sim
-    print(f"\n[sweep_isaac] Ładowanie kafelków: {tiles_dir}")
+    # Inicjalizacja sceny Isaac Sim — raz dla wszystkich skanów
+    tile_files = sorted(tiles_dir.glob("*.obj"))
+    n_tiles = len(tile_files)
+    print(f"\n[sweep_isaac] Ładowanie {n_tiles} kafelków: {tiles_dir}")
     world = World(stage_units_in_meters=1.0)
     stage = omni.usd.get_context().get_stage()
-
-    add_lake(stage, tiles_dir, lake_scale)
+    add_lake(stage, tiles_dir, scan_specs[0]["scale"])
     world.reset()
     world.step(render=False)
-
     physx = get_physx_scene_query_interface()
 
-    theta_y_deg = build_sweep_angles(range_deg, step_deg)
-    theta_z_deg = build_sweep_angles(range_deg, step_deg) if sweep_z else [0.0]
+    cone_offsets    = build_cone_offsets(SONAR_BEAM_HALF_DEG)
+    ts              = datetime.now().strftime("%Y%m%d_%H%M%S")
+    prev_scale      = scan_specs[0]["scale"]
+    cached_step_deg = None
+    theta_y_deg = theta_z_deg = theta_y_rad = theta_z_rad = all_dirs = None
+    wp_params: list[dict] = []
 
-    theta_y_rad = np.radians(theta_y_deg)
-    theta_z_rad = np.radians(theta_z_deg)
+    for spec_idx, spec in enumerate(scan_specs):
+        lake_scale     = spec["scale"]
+        waypoints_file = spec["waypoints_file"]
+        step_deg       = spec["step_deg"]
 
-    all_dirs     = fk_directions_all(theta_z_rad, theta_y_rad)
-    cone_offsets = build_cone_offsets(SONAR_BEAM_HALF_DEG)
+        print(f"\n{'='*60}")
+        print(f"[sweep_isaac] Skan {spec_idx+1}/{len(scan_specs)}  "
+              f"×{lake_scale:g}  wp={waypoints_file.name}  step={step_deg}°")
+        print(f"{'='*60}")
 
-    rays_per_wp = len(theta_z_deg) * len(theta_y_deg)
-    total_rays  = len(waypoints) * rays_per_wp
-    print(f"[sweep_isaac] {len(waypoints)} waypointów × {rays_per_wp} pozycji = {total_rays:,} raycasts")
-    print(f"[sweep_isaac]   θ_z: {theta_z_deg[0]:.0f}°..{theta_z_deg[-1]:.0f}°  "
-          f"θ_y: {theta_y_deg[0]:.0f}°..{theta_y_deg[-1]:.0f}°  krok {step_deg}°")
+        if spec_idx > 0 and lake_scale != prev_scale:
+            rescale_lake(stage, n_tiles, lake_scale)
+            world.reset()
+            world.step(render=False)
+            prev_scale = lake_scale
 
-    results = []
-    t0      = time.monotonic()
-    ray_idx = 0
-    origin_arr = np.array([0.0, 0.0, boat_z])
+        if step_deg != cached_step_deg:
+            theta_y_deg     = build_sweep_angles(range_deg, step_deg)
+            theta_z_deg     = build_sweep_angles(range_deg, step_deg) if sweep_z else [0.0]
+            theta_y_rad     = np.radians(theta_y_deg)
+            theta_z_rad     = np.radians(theta_z_deg)
+            all_dirs        = fk_directions_all(theta_z_rad, theta_y_rad)
+            cached_step_deg = step_deg
+            print(f"[sweep_isaac]   θ_z: {theta_z_deg[0]:.0f}°..{theta_z_deg[-1]:.0f}°  "
+                  f"θ_y: {theta_y_deg[0]:.0f}°..{theta_y_deg[-1]:.0f}°  krok {step_deg}°  "
+                  f"({len(theta_z_deg)*len(theta_y_deg)} pozycji/wp)")
 
-    for wp_idx, (wx, wy) in enumerate(waypoints):
-        origin = carb.Float3(wx, wy, boat_z)
-        origin_arr[0], origin_arr[1] = wx, wy
+        rays_per_wp       = len(theta_z_deg) * len(theta_y_deg)
+        waypoints         = load_waypoints_csv(waypoints_file, lake_scale)
+        sweep_time_per_wp = _SWEEP_TIME_REF_MIN / _RAYS_PER_WP_REF * rays_per_wp
+        path_length       = sum(
+            math.sqrt((waypoints[i+1][0] - waypoints[i][0])**2 +
+                      (waypoints[i+1][1] - waypoints[i][1])**2)
+            for i in range(len(waypoints) - 1)
+        )
+        transport_time    = path_length / (boat_speed * 60.0)
+        time_min          = sweep_time_per_wp * len(waypoints) + transport_time
+        print(f"[sweep_isaac] sweep_time_per_wp={sweep_time_per_wp:.2f} min  "
+              f"total_sweep={sweep_time_per_wp*len(waypoints):.2f} min  "
+              f"transport={transport_time:.2f} min  path={path_length:.1f} m")
+        total_rays  = len(waypoints) * rays_per_wp
+        print(f"[sweep_isaac] {len(waypoints)} wp × {rays_per_wp} pozycji = {total_rays:,} raycasts  "
+              f"(czas misji: {time_min:.1f} min)")
 
-        for iz, tz_deg in enumerate(theta_z_deg):
-            for iy, ty_deg in enumerate(theta_y_deg):
-                d_arr = all_dirs[iz, iy]
-                dirs  = apply_cone(d_arr, cone_offsets)
-                dist  = cone_raycast(physx, origin, dirs)
+        results    = []
+        t0         = time.monotonic()
+        ray_idx    = 0
+        origin_arr = np.array([0.0, 0.0, boat_z])
 
-                hit = origin_arr + d_arr * dist
-                results.append((wx, wy, tz_deg, ty_deg, dist,
-                                float(hit[0]), float(hit[1]), float(hit[2])))
-                ray_idx += 1
+        for wp_idx, (wx, wy) in enumerate(waypoints):
+            origin = carb.Float3(wx, wy, boat_z)
+            origin_arr[0], origin_arr[1] = wx, wy
 
-        if wp_idx == 0 or (wp_idx + 1) % max(1, len(waypoints) // 10) == 0 or wp_idx + 1 == len(waypoints):
-            elapsed   = time.monotonic() - t0
-            done_frac = ray_idx / total_rays if total_rays else 1
-            remaining = (elapsed / done_frac) * (1 - done_frac) if done_frac > 0 else 0
-            print(f"  [{wp_idx+1:>4}/{len(waypoints)}] {100*done_frac:5.1f}%  "
-                  f"{ray_idx:,} raycasts  ETA: {remaining:.0f}s")
+            for iz, tz_deg in enumerate(theta_z_deg):
+                for iy, ty_deg in enumerate(theta_y_deg):
+                    d_arr = all_dirs[iz, iy]
+                    dirs  = apply_cone(d_arr, cone_offsets)
+                    dist  = cone_raycast(physx, origin, dirs)
+                    ray_idx += 1
+                    if dist is None:
+                        continue
+                    hit = origin_arr + d_arr * dist
+                    results.append((wx, wy, tz_deg, ty_deg, dist,
+                                    float(hit[0]), float(hit[1]), float(hit[2])))
 
-    elapsed = time.monotonic() - t0
-    print(f"[sweep_isaac] Gotowe. Czas: {elapsed:.1f}s  ({ray_idx:,} raycasts)")
+            if wp_idx == 0 or (wp_idx + 1) % max(1, len(waypoints) // 10) == 0 or wp_idx + 1 == len(waypoints):
+                elapsed   = time.monotonic() - t0
+                done_frac = ray_idx / total_rays if total_rays else 1
+                remaining = (elapsed / done_frac) * (1 - done_frac) if done_frac > 0 else 0
+                print(f"  [{wp_idx+1:>4}/{len(waypoints)}] {100*done_frac:5.1f}%  "
+                      f"{ray_idx:,} raycasts  ETA: {remaining:.0f}s")
 
-    pts = np.array([[r[5], r[6], r[7]] for r in results], dtype=np.float32)
+        elapsed = time.monotonic() - t0
+        print(f"[sweep_isaac] skan {spec_idx+1} gotowy. Czas: {elapsed:.1f}s  ({ray_idx:,} raycasts)")
+        wp_params.append({"lake_scale": lake_scale, "time_min": time_min})
 
-    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stem = f"sweep_x{lake_scale:g}_wp{len(waypoints)}_r{range_deg:g}s{step_deg:g}_{time_min:g}min_{ts}"
-    out_path = out_dir / stem
+        pts  = np.array([[r[5], r[6], r[7]] for r in results], dtype=np.float32)
+        stem = (f"sweep_x{lake_scale:g}_wp{len(waypoints)}_r{range_deg:g}s{step_deg:g}"
+                f"_{time_min:.1f}min_{ts}")
 
-    pcd_path = out_path.with_suffix(".pcd")
-    save_pcd(pts, pcd_path)
-    print(f"[sweep_isaac] PCD → {pcd_path}")
+        pcd_path = out_dir / (stem + ".pcd")
+        save_pcd(pts, pcd_path)
+        print(f"[sweep_isaac] PCD → {pcd_path}")
 
-    try:
-        import trimesh
-        ply_path = out_path.with_suffix(".ply")
-        trimesh.PointCloud(pts).export(str(ply_path))
-        print(f"[sweep_isaac] PLY → {ply_path}")
-    except ImportError:
-        pass
+        try:
+            import trimesh
+            ply_path = out_dir / (stem + ".ply")
+            trimesh.PointCloud(pts).export(str(ply_path))
+            print(f"[sweep_isaac] PLY → {ply_path}")
+        except ImportError:
+            pass
 
-    if save_csv_flag:
-        csv_path = out_path.with_suffix(".csv")
-        with open(csv_path, "w", newline="") as f:
-            writer = csv.DictWriter(
-                f, fieldnames=["world_x", "world_y", "theta_z_deg", "theta_y_deg",
-                               "distance", "hit_x", "hit_y", "hit_z"])
-            writer.writeheader()
-            writer.writerows([{
-                "world_x": r[0], "world_y": r[1],
-                "theta_z_deg": r[2], "theta_y_deg": r[3],
-                "distance": r[4],
-                "hit_x": r[5], "hit_y": r[6], "hit_z": r[7],
-            } for r in results])
-        print(f"[sweep_isaac] CSV → {csv_path}")
+        if save_csv_flag:
+            csv_path = out_dir / (stem + ".csv")
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=["world_x", "world_y", "theta_z_deg", "theta_y_deg",
+                                   "distance", "hit_x", "hit_y", "hit_z"])
+                writer.writeheader()
+                writer.writerows([{
+                    "world_x": r[0], "world_y": r[1],
+                    "theta_z_deg": r[2], "theta_y_deg": r[3],
+                    "distance": r[4],
+                    "hit_x": r[5], "hit_y": r[6], "hit_z": r[7],
+                } for r in results])
+            print(f"[sweep_isaac] CSV → {csv_path}")
+
+    wp_params_path = pathlib.Path.cwd() / "baseline_waypoints.csv"
+    with open(wp_params_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["lake_scale", "time_min"])
+        writer.writeheader()
+        writer.writerows(wp_params)
+    print(f"[sweep_isaac] Params dla generate_waypoints → {wp_params_path}")
 
     simulation_app.close()
 
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    _DEFAULT_WP_FILE = _PKG_SHARE / "waypoints" / "waypoints_sweep_2pt_x1.csv"
+
     parser = argparse.ArgumentParser(
-        description="Batymetria sweep: generuje waypoints, następnie skanuje raycasting w Isaac Sim."
+        description="Batymetria sweep: wczytuje waypoints z CSV, skanuje raycasting dla wielu skal jeziora."
     )
-
-    # Parametry waypoints
-    wp = parser.add_argument_group("waypoints")
-    wp.add_argument("--step",      type=float, default=2.0,
-                    help="Krok siatki waypointów [m] w przestrzeni Isaac Sim (domyślnie 2.0)")
-    wp.add_argument("--n-grid",    type=int, default=None,
-                    help="Zamiast --step: generuj ~N×N waypointów w jeziorze")
-    wp.add_argument("--water-y",   default="auto",
-                    help='Poziom wody w OBJ (oś Y). "auto" = max Y mesha.')
-    wp.add_argument("--boat-z",         type=float, default=0.0,
-                    help="Wysokość łódki w świecie Isaac Sim [m] (domyślnie 0.0)")
-    wp.add_argument("--mesh-reduction", type=float, default=10.0,
-                    help="Ile razy mesh jest pomniejszony (domyślnie 10). "
-                         "Skala w Isaac = 100 / mesh-reduction")
-
-    # Parametry symulacji
-    sim = parser.add_argument_group("simulation")
-    sim.add_argument("--tiles",      default=str(_DEFAULT_TILES_DIR),
-                     help="Katalog z kafelkami .obj jeziora")
-    sim.add_argument("--out",        default="/workspace/log",
-                     help="Katalog wyjściowy (nazwa pliku generowana automatycznie)")
-    sim.add_argument("--time",       type=float, required=True,
-                     help="Planowany czas trwania misji [min] — wpisywany do nazwy pliku")
-    sim.add_argument("--range_deg",  type=float, default=90.0,
-                     help="Połowa zakresu sweepowania [°]")
-    sim.add_argument("--step_deg",   type=float, default=5.0,
-                     help="Krok sweepowania [°]")
-    sim.add_argument("--no_sweep_z", action="store_true",
-                     help="Sweepuj tylko oś Y (domyślnie: obie osie)")
-    sim.add_argument("--csv",        action="store_true",
-                     help="Zapisz wyniki do CSV oprócz PCD/PLY")
+    parser.add_argument("--scales", type=float, nargs="+", default=[10.0],
+                        help="Lista skal jeziora (domyślnie [10]). "
+                             "Mesh ładowany raz, między skalami tylko zmiana ScaleOp + world.reset().")
+    parser.add_argument("--max-scale", type=int, default=None,
+                        help="Skrót: uruchom dla skal 1, 2, ..., N (nadpisuje --scales).")
+    parser.add_argument("--waypoints-file", type=pathlib.Path, default=_DEFAULT_WP_FILE,
+                        help="CSV z waypointami w skali x1 (kolumny: world_x, world_y). "
+                             "Współrzędne mnożone przez scale dla każdej iteracji.")
+    parser.add_argument("--boat-z",        type=float, default=-0.05,
+                        help="Wysokość sonara [m] (domyślnie -0.05: z URDF sonar_link przy joint=0)")
+    parser.add_argument("--tiles",         default=str(_DEFAULT_TILES_DIR),
+                        help="Katalog z kafelkami .obj jeziora")
+    parser.add_argument("--out",           default="/workspace/log",
+                        help="Katalog wyjściowy")
+    parser.add_argument("--range_deg",     type=float, default=90.0,
+                        help="Połowa zakresu sweepowania [°] (domyślnie 90)")
+    parser.add_argument("--step_deg",      type=float, default=2.0,
+                        help="Krok sweepowania [°] (domyślnie 2, jak mission.yaml sweep_step_deg)")
+    parser.add_argument("--no_sweep_z",    action="store_true",
+                        help="Sweepuj tylko oś Y (domyślnie: obie osie)")
+    parser.add_argument("--sweep-time",    type=float, default=14.0,
+                        help="Stały czas sweepowania [min], niezależny od skali (domyślnie 14.0)")
+    parser.add_argument("--boat-speed", type=float, default=1.0,
+                        help="Prędkość łódki [m/s] używana do obliczenia czasu transportu (domyślnie 1.0)")
+    parser.add_argument("--csv",           action="store_true",
+                        help="Zapisz wyniki do CSV oprócz PCD/PLY")
+    parser.add_argument("--params-csv", type=pathlib.Path, default=None,
+                        help="CSV z parametrami skanów (kolumny: scale, waypoints_file, step_deg). "
+                             "Każdy wiersz = jeden skan, posortowane rosnąco po scale. "
+                             "Nadpisuje --scales/--max-scale, --waypoints-file i --step_deg.")
 
     args = parser.parse_args()
 
+    if args.params_csv is not None:
+        import csv as _csv
+        with open(args.params_csv) as f:
+            rows = list(_csv.DictReader(f))
+        scan_specs = sorted([
+            {
+                "scale":          float(r["scale"]),
+                "waypoints_file": pathlib.Path(r["waypoints_file"]),
+                "step_deg":       float(r["step_deg"]),
+            }
+            for r in rows
+        ], key=lambda s: s["scale"])
+        print(f"[sweep_isaac] --params-csv: {len(scan_specs)} skanów z {args.params_csv}")
+    else:
+        scales = list(range(1, args.max_scale + 1)) if args.max_scale is not None else args.scales
+        scan_specs = [
+            {
+                "scale":          float(s),
+                "waypoints_file": args.waypoints_file,
+                "step_deg":       args.step_deg,
+            }
+            for s in scales
+        ]
+
     main(
-        tiles_dir     = pathlib.Path(args.tiles),
-        step_m        = args.step,
-        n_grid        = args.n_grid,
-        water_y       = args.water_y,
-        boat_z        = args.boat_z,
-        mesh_reduction= args.mesh_reduction,
-        out_dir       = pathlib.Path(args.out),
-        range_deg     = args.range_deg,
-        step_deg      = args.step_deg,
-        sweep_z       = not args.no_sweep_z,
-        time_min      = args.time,
-        save_csv_flag = args.csv,
+        tiles_dir      = pathlib.Path(args.tiles),
+        scan_specs     = scan_specs,
+        boat_z         = args.boat_z,
+        out_dir        = pathlib.Path(args.out),
+        range_deg      = args.range_deg,
+        sweep_z        = not args.no_sweep_z,
+        boat_speed     = args.boat_speed,
+        save_csv_flag  = args.csv,
     )
