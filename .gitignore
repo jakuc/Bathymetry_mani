@@ -21,4 +21,9 @@ claude_resume
 
 # Duże pliki mesh jeziora (~2 GB) — trzymać osobno / Git LFS
 src/xm540_bringup/meshes/*.obj
+src/xm540_bringup/meshes/*.usd
 src/xm540_bringup/meshes/big_lake_simp_tiles/
+
+# Postprocessing i wyniki pomiarów — chmury punktów, tabele, wykresy, raporty.
+# Rosną w gigabajty i są odtwarzalne ze skryptów, więc trzymamy je poza repo.
+analysis/
