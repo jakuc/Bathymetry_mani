@@ -21,21 +21,83 @@
   <xacro:arg name="use_echosounder" default="true"/>
   <xacro:arg name="use_gnss" default="true"/>
 
+  <!--
+    servo_id: adres serwa na magistrali Dynamixel. Adres siedzi w EEPROM serwa,
+    więc wymiana egzemplarza zmienia go bez żadnego śladu w repo - stąd argument
+    zamiast literału, żeby dopasować się z linii poleceń bez edycji URDF-a.
+
+    Stan sprzętu (2026-08-07): na magistrali są DWA serwa XM540-W270, oba @1 Mbps:
+      ID 1 - człon 2 (głowica), firmware 50
+      ID 2 - człon 1,           firmware 48
+    Ten blok deklaruje na razie tylko jedno z nich (jeden joint), więc servo_id
+    wybiera, które. Adresy sprawdzisz skanem magistrali, nie zgadywaniem.
+  -->
+  <xacro:arg name="servo_id" default="1"/>
+
+  <!--
+    Profil ruchu serwa. Zero znaczy u Dynamixela "bez profilu", czyli dojazd do
+    zadanej pozycji z maksymalną prędkością - na samym manipulatorze przechodziło
+    bez echa, ale z zamontowaną głowicą każdy skok komendy szarpie całą
+    konstrukcją. Stąd niezerowe wartości domyślne na realnym sprzęcie.
+    Jednostki wg dokumentacji XM540: prędkość 0,229 obr/min na jednostkę
+    (30 = 6,9 obr/min), przyspieszenie 214,577 obr/min^2 (10 -> rozpęd ~0,2 s).
+  -->
+  <xacro:arg name="profile_velocity" default="30"/>
+  <xacro:arg name="profile_acceleration" default="10"/>
+
+  <!--
+    Zero mechaniczne każdej osi wyrażone w surowej pozycji serwa (0..4095).
+    Po zmontowaniu głowicy zero konstrukcji nie wypada w środku zakresu enkodera
+    (2048), więc bez tego jointy w URDF-ie kłamałyby o rzeczywistym położeniu.
+    Wartości zmierzone 2026-08-07 przy głowicy ustawionej w pozycji zerowej;
+    po każdym rozkręceniu i złożeniu trzeba je odczytać na nowo (skan magistrali
+    pokazuje present_position).
+  -->
+  <xacro:arg name="center_raw" default="2670"/>      <!-- ID 1, człon 2 (głowica) -->
+  <xacro:arg name="center_raw_z" default="3353"/>    <!-- ID 2, człon 1 -->
+
+  <!--
+    Czy druga oś (xm540_joint_z, ID 2) ma być w ogóle deklarowana.
+    Domyślnie FALSE, mimo że serwo fizycznie jest: przy dwóch jointach
+    forward_position_controller oczekuje komendy dwuelementowej, a
+    goal_position_bridge (i stojący za nim manual_node z xm540_bringup)
+    publikuje jednoelementową - kontroler odrzuciłby ją jako niezgodną
+    rozmiarem. Włączenie drugiej osi wymaga więc sterowania, które podaje
+    obie wartości naraz. Patrz launch: przy use_servo_z:=true most i
+    manual_node nie są uruchamiane.
+  -->
+  <xacro:arg name="use_servo_z" default="false"/>
+  <xacro:arg name="servo_id_z" default="2"/>
+
   <xacro:if value="$(arg use_servo)">
     <ros2_control name="xm540_servo" type="system">
       <hardware>
         <plugin>hardware_controller/DynamixelSystem</plugin>
         <param name="device_port">/dev/u2d2</param>
-        <param name="baud_rate">57600</param>
+        <param name="baud_rate">1000000</param>
+        <param name="profile_velocity">$(arg profile_velocity)</param>
+        <param name="profile_acceleration">$(arg profile_acceleration)</param>
       </hardware>
       <joint name="xm540_joint">
-        <param name="servo_id">1</param>
+        <param name="servo_id">$(arg servo_id)</param>
+        <param name="center_raw">$(arg center_raw)</param>
         <command_interface name="position"/>
         <state_interface name="position"/>
         <state_interface name="velocity"/>
         <state_interface name="effort"/>
         <state_interface name="temperature"/>
       </joint>
+      <xacro:if value="$(arg use_servo_z)">
+        <joint name="xm540_joint_z">
+          <param name="servo_id">$(arg servo_id_z)</param>
+          <param name="center_raw">$(arg center_raw_z)</param>
+          <command_interface name="position"/>
+          <state_interface name="position"/>
+          <state_interface name="velocity"/>
+          <state_interface name="effort"/>
+          <state_interface name="temperature"/>
+        </joint>
+      </xacro:if>
     </ros2_control>
   </xacro:if>
 

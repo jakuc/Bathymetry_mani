@@ -11,7 +11,16 @@ Argumenty:
   use_servo        (bool, true)  – czy deklarować w URDF serwo XM540 (wymaga /dev/u2d2)
   use_echosounder  (bool, true)  – czy deklarować w URDF echosondę SLD-100 (wymaga /dev/echosounder)
   use_gnss         (bool, true)  – czy deklarować w URDF odbiornik GNSS mosaic-H (wymaga /dev/gnss)
-  use_rviz         (bool, true)  – czy odpalać rviz2
+  use_rviz         (bool, false) – czy odpalać rviz2
+  servo_id         (int, 1)      – adres serwa na magistrali (siedzi w EEPROM serwa)
+  profile_velocity (int, 30)     – profil prędkości serwa; 0 = BEZ profilu, czyli
+                                   dojazd z maksymalną prędkością (szarpie głowicą)
+  profile_acceleration (int, 10) – profil przyspieszenia; 0 = bez profilu
+
+Domyślnie false, bo ten launch odpala się przede wszystkim na płytce (bathset,
+Raspberry Pi 3, headless) - obraz ROS-a jest tam budowany BEZ rviz2, więc
+use_rviz:=true wysypałoby launch na braku executable'a. Na PC, gdzie rviz2
+jest, wołaj jawnie: `ros2 launch ... real_hardware.launch.py use_rviz:=true`.
 
 use_servo/use_echosounder NIE są tylko kosmetyczne: controller_manager (ta wersja
 ros2_control) twardo pada (abort całego procesu), jeśli zadeklarowany w URDF
@@ -56,6 +65,7 @@ def _launch_setup(context, *args, **kwargs):
     use_echosounder = LaunchConfiguration("use_echosounder").perform(context).lower() == "true"
     use_gnss = LaunchConfiguration("use_gnss").perform(context).lower() == "true"
     use_rviz = LaunchConfiguration("use_rviz").perform(context).lower() == "true"
+    use_servo_z = LaunchConfiguration("use_servo_z").perform(context).lower() == "true"
 
     hw_share = get_package_share_directory("hardware_controller")
     bringup_share = get_package_share_directory("xm540_bringup")
@@ -66,6 +76,13 @@ def _launch_setup(context, *args, **kwargs):
         "use_servo": "true" if use_servo else "false",
         "use_echosounder": "true" if use_echosounder else "false",
         "use_gnss": "true" if use_gnss else "false",
+        "servo_id": LaunchConfiguration("servo_id").perform(context),
+        "profile_velocity": LaunchConfiguration("profile_velocity").perform(context),
+        "profile_acceleration": LaunchConfiguration("profile_acceleration").perform(context),
+        "use_servo_z": "true" if use_servo_z else "false",
+        "servo_id_z": LaunchConfiguration("servo_id_z").perform(context),
+        "center_raw": LaunchConfiguration("center_raw").perform(context),
+        "center_raw_z": LaunchConfiguration("center_raw_z").perform(context),
     }
     robot_description_xml = xacro.process_file(xacro_path, mappings=mappings).toxml()
 
@@ -78,6 +95,13 @@ def _launch_setup(context, *args, **kwargs):
     with open(os.path.join(hw_share, "config", "controllers.yaml")) as f:
         merged_params = yaml.safe_load(f)
     merged_params["/**"] = {"ros__parameters": {"robot_description": robot_description_xml}}
+
+    # Lista jointów kontrolera MUSI zgadzać się z tym, co zadeklarował URDF -
+    # inaczej forward_position_controller nie wystartuje ("joint not found").
+    # Trzymanie jej na sztywno w controllers.yaml rozjeżdżałoby się z flagą
+    # use_servo_z, więc składamy ją tutaj, z tego samego źródła prawdy.
+    joints = ["xm540_joint"] + (["xm540_joint_z"] if use_servo_z else [])
+    merged_params["forward_position_controller"]["ros__parameters"]["joints"] = joints
 
     merged_params_file = tempfile.NamedTemporaryFile(
         mode="w", suffix=".yaml", prefix="hardware_controller_params_", delete=False)
@@ -123,22 +147,28 @@ def _launch_setup(context, *args, **kwargs):
     if use_servo:
         nodes.append(TimerAction(period=2.0, actions=[_spawner("joint_state_broadcaster")]))
         nodes.append(TimerAction(period=2.5, actions=[_spawner("forward_position_controller")]))
-        nodes.append(Node(
-            package="hardware_controller",
-            executable="goal_position_bridge",
-            name="goal_position_bridge",
-            output="screen",
-        ))
-        nodes.append(Node(
-            package="xm540_bringup",
-            executable="manual_node",
-            name="manual_node",
-            output="screen",
-            parameters=[{
-                "tolerance_deg": 0.5,
-                "timeout_s":     5.0,
-            }],
-        ))
+        # Most i manual_node są z założenia JEDNOOSIOWE: most publikuje komendę
+        # jednoelementową, bo /servo/goal_position to pojedynczy Float64. Przy
+        # dwóch jointach kontroler odrzuca taką komendę (niezgodny rozmiar),
+        # więc przy use_servo_z tej pary nie uruchamiamy - dwiema osiami trzeba
+        # sterować czymś, co podaje obie wartości naraz.
+        if not use_servo_z:
+            nodes.append(Node(
+                package="hardware_controller",
+                executable="goal_position_bridge",
+                name="goal_position_bridge",
+                output="screen",
+            ))
+            nodes.append(Node(
+                package="xm540_bringup",
+                executable="manual_node",
+                name="manual_node",
+                output="screen",
+                parameters=[{
+                    "tolerance_deg": 0.5,
+                    "timeout_s":     5.0,
+                }],
+            ))
 
     if use_echosounder:
         nodes.append(TimerAction(period=3.0, actions=[_spawner("range_sensor_broadcaster")]))
@@ -167,7 +197,21 @@ def generate_launch_description():
                               description="Czy deklarować w URDF echosondę SLD-100 (wymaga /dev/echosounder)"),
         DeclareLaunchArgument("use_gnss", default_value="true",
                               description="Czy deklarować w URDF odbiornik GNSS mosaic-H (wymaga /dev/gnss)"),
-        DeclareLaunchArgument("use_rviz", default_value="true",
-                              description="Czy odpalać rviz2"),
+        DeclareLaunchArgument("use_rviz", default_value="false",
+                              description="Czy odpalać rviz2 (na płytce nie ma go w ogóle - patrz docstring)"),
+        DeclareLaunchArgument("servo_id", default_value="1",
+                              description="Adres serwa XM540 na magistrali Dynamixel (EEPROM serwa, fabrycznie 1)"),
+        DeclareLaunchArgument("profile_velocity", default_value="30",
+                              description="Profile velocity serwa (0 = bez profilu, maksymalna prędkość!)"),
+        DeclareLaunchArgument("profile_acceleration", default_value="10",
+                              description="Profile acceleration serwa (0 = bez profilu)"),
+        DeclareLaunchArgument("use_servo_z", default_value="false",
+                              description="Czy deklarować drugą oś xm540_joint_z (wyłącza most i manual_node)"),
+        DeclareLaunchArgument("servo_id_z", default_value="2",
+                              description="Adres serwa drugiej osi na magistrali"),
+        DeclareLaunchArgument("center_raw", default_value="2670",
+                              description="Surowa pozycja serwa odpowiadająca zeru xm540_joint"),
+        DeclareLaunchArgument("center_raw_z", default_value="3353",
+                              description="Surowa pozycja serwa odpowiadająca zeru xm540_joint_z"),
         OpaqueFunction(function=_launch_setup),
     ])

@@ -37,6 +37,10 @@ struct JointHandle
 {
   std::string name;
   uint8_t servo_id{0};
+  // Pozycja serwa (surowa) odpowiadająca zeru jointa w URDF-ie. Domyślnie środek
+  // zakresu enkodera, ale po zmontowaniu konstrukcji zero mechaniczne prawie nigdy
+  // nie wypada w środku - stąd parametr per joint, a nie wspólna stała.
+  int32_t center_raw{2048};
   double command_position{0.0};   // rad, zadana pozycja (interfejs komend)
   double state_position{0.0};     // rad
   double state_velocity{0.0};     // surowa jednostka serwa (bez konwersji — jak w dynamixel_node.py)
@@ -60,8 +64,8 @@ public:
   hardware_interface::return_type write(const rclcpp::Time & time, const rclcpp::Duration & period) override;
 
 private:
-  double raw_to_rad(int32_t raw) const;
-  int32_t rad_to_raw(double rad) const;
+  double raw_to_rad(int32_t raw, int32_t center_raw) const;
+  int32_t rad_to_raw(double rad, int32_t center_raw) const;
 
   void write1(uint8_t servo_id, uint16_t addr, uint8_t value);
   void write4(uint8_t servo_id, uint16_t addr, int32_t value);
@@ -70,10 +74,16 @@ private:
   int32_t read4(uint8_t servo_id, uint16_t addr);
 
   std::string device_port_;
-  int baud_rate_{57600};
+  int baud_rate_{1000000};
+  // Profil ruchu serwa. UWAGA: 0 u Dynamixela nie znaczy "zero prędkości", tylko
+  // "bez profilu" — serwo skacze do zadanej pozycji z maksymalną prędkością.
+  // Dla samego manipulatora to było nieszkodliwe, ale z zamontowaną głowicą
+  // każdy skok komendy jest szarpnięciem całą konstrukcją, więc wartość musi
+  // być ustawialna z URDF-a. Domyślne 0 zachowuje dotychczasowe zachowanie.
+  int profile_velocity_{0};
+  int profile_acceleration_{0};
   static constexpr double kProtocolVersion = 2.0;
   static constexpr int32_t kEncoderResolution = 4096;
-  static constexpr int32_t kCenterRaw = 2048;
 
   std::vector<JointHandle> joints_;
 

@@ -1,6 +1,7 @@
 #include "hardware_controller/dynamixel_system.hpp"
 
 #include <cmath>
+#include <cstdint>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "pluginlib/class_list_macros.hpp"
@@ -20,12 +21,25 @@ hardware_interface::CallbackReturn DynamixelSystem::on_init(const hardware_inter
   device_port_ = info_.hardware_parameters.at("device_port");
   baud_rate_ = std::stoi(info_.hardware_parameters.at("baud_rate"));
 
+  // Opcjonalne — brak wpisu w URDF-ie zostawia 0, czyli ruch bez profilu.
+  const auto opt_param = [this](const std::string & key, int fallback) {
+    const auto it = info_.hardware_parameters.find(key);
+    return it != info_.hardware_parameters.end() ? std::stoi(it->second) : fallback;
+  };
+  profile_velocity_ = opt_param("profile_velocity", profile_velocity_);
+  profile_acceleration_ = opt_param("profile_acceleration", profile_acceleration_);
+
   joints_.reserve(info_.joints.size());
   for (const auto & joint : info_.joints)
   {
     JointHandle jh;
     jh.name = joint.name;
     jh.servo_id = static_cast<uint8_t>(std::stoi(joint.parameters.at("servo_id")));
+    const auto center_it = joint.parameters.find("center_raw");
+    if (center_it != joint.parameters.end())
+    {
+      jh.center_raw = std::stoi(center_it->second);
+    }
     joints_.push_back(jh);
   }
 
@@ -75,8 +89,8 @@ hardware_interface::CallbackReturn DynamixelSystem::on_configure(const rclcpp_li
   {
     write1(joint.servo_id, DynamixelRegisters::ADDR_TORQUE_ENABLE, 0);
     write1(joint.servo_id, DynamixelRegisters::ADDR_OPERATING_MODE, DynamixelRegisters::MODE_POSITION);
-    write4(joint.servo_id, DynamixelRegisters::ADDR_PROFILE_VELOCITY, 0);
-    write4(joint.servo_id, DynamixelRegisters::ADDR_PROFILE_ACCELERATION, 0);
+    write4(joint.servo_id, DynamixelRegisters::ADDR_PROFILE_VELOCITY, profile_velocity_);
+    write4(joint.servo_id, DynamixelRegisters::ADDR_PROFILE_ACCELERATION, profile_acceleration_);
   }
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -89,7 +103,7 @@ hardware_interface::CallbackReturn DynamixelSystem::on_activate(const rclcpp_lif
     write1(joint.servo_id, DynamixelRegisters::ADDR_TORQUE_ENABLE, 1);
     // Komenda startowa = aktualna pozycja serwa, żeby aktywacja nie szarpnęła manipulatorem.
     const int32_t raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_POSITION);
-    joint.state_position = raw_to_rad(raw);
+    joint.state_position = raw_to_rad(raw, joint.center_raw);
     joint.command_position = joint.state_position;
   }
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -117,11 +131,15 @@ hardware_interface::return_type DynamixelSystem::read(const rclcpp::Time &, cons
     const uint16_t cur_raw = read2(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_CURRENT);
     const uint8_t tmp_raw = read1(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_TEMPERATURE);
 
-    joint.state_position = raw_to_rad(pos_raw);
+    joint.state_position = raw_to_rad(pos_raw, joint.center_raw);
     // velocity/effort surowe, bez konwersji na jednostki SI — tak samo jak
     // dotychczasowy dynamixel_node.py (JointState.velocity/effort = raw).
     joint.state_velocity = static_cast<double>(vel_raw);
-    joint.state_effort = static_cast<double>(cur_raw);
+    // PRESENT_CURRENT jest w rejestrze liczbą ZE ZNAKIEM (int16) — znak niesie
+    // kierunek momentu. Bez tego rzutowania prąd przeciwnego znaku wychodził
+    // jako ~65500 zamiast małej wartości ujemnej, co psuło każdy pomiar
+    // obciążenia. Jednostka zostaje surowa (1 = 2,69 mA dla XM540).
+    joint.state_effort = static_cast<double>(static_cast<int16_t>(cur_raw));
     joint.state_temperature = static_cast<double>(tmp_raw);
   }
   return hardware_interface::return_type::OK;
@@ -131,19 +149,21 @@ hardware_interface::return_type DynamixelSystem::write(const rclcpp::Time &, con
 {
   for (auto & joint : joints_)
   {
-    write4(joint.servo_id, DynamixelRegisters::ADDR_GOAL_POSITION, rad_to_raw(joint.command_position));
+    write4(
+      joint.servo_id, DynamixelRegisters::ADDR_GOAL_POSITION,
+      rad_to_raw(joint.command_position, joint.center_raw));
   }
   return hardware_interface::return_type::OK;
 }
 
-double DynamixelSystem::raw_to_rad(int32_t raw) const
+double DynamixelSystem::raw_to_rad(int32_t raw, int32_t center_raw) const
 {
-  return static_cast<double>(raw - kCenterRaw) * 2.0 * M_PI / static_cast<double>(kEncoderResolution);
+  return static_cast<double>(raw - center_raw) * 2.0 * M_PI / static_cast<double>(kEncoderResolution);
 }
 
-int32_t DynamixelSystem::rad_to_raw(double rad) const
+int32_t DynamixelSystem::rad_to_raw(double rad, int32_t center_raw) const
 {
-  return kCenterRaw + static_cast<int32_t>(std::lround(rad * kEncoderResolution / (2.0 * M_PI)));
+  return center_raw + static_cast<int32_t>(std::lround(rad * kEncoderResolution / (2.0 * M_PI)));
 }
 
 void DynamixelSystem::write1(uint8_t servo_id, uint16_t addr, uint8_t value)
