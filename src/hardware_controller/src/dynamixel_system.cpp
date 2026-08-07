@@ -101,8 +101,24 @@ hardware_interface::CallbackReturn DynamixelSystem::on_activate(const rclcpp_lif
   for (auto & joint : joints_)
   {
     write1(joint.servo_id, DynamixelRegisters::ADDR_TORQUE_ENABLE, 1);
-    // Komenda startowa = aktualna pozycja serwa, żeby aktywacja nie szarpnęła manipulatorem.
-    const int32_t raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_POSITION);
+    // Komenda startowa = aktualna pozycja serwa, żeby aktywacja nie szarpnęła
+    // manipulatorem. Nieudany odczyt jest tu GROŹNY: przyjęcie zera oznaczałoby
+    // komendę "jedź do zera enkodera" z pełną konstrukcją, więc wolimy nie wstać.
+    // Ponawiamy, bo pojedynczy zgubiony pakiet to na tej magistrali norma i nie
+    // ma powodu, żeby przez niego nie wstał cały stack.
+    bool ok = false;
+    int32_t raw = 0;
+    for (int attempt = 0; attempt < 5 && !ok; ++attempt)
+    {
+      raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_POSITION, ok);
+    }
+    if (!ok)
+    {
+      RCLCPP_ERROR(
+        logger_, "Nie mogę odczytać pozycji startowej serwa ID=%d — przerywam aktywację",
+        joint.servo_id);
+      return hardware_interface::CallbackReturn::ERROR;
+    }
     joint.state_position = raw_to_rad(raw, joint.center_raw);
     joint.command_position = joint.state_position;
   }
@@ -126,21 +142,40 @@ hardware_interface::return_type DynamixelSystem::read(const rclcpp::Time &, cons
 {
   for (auto & joint : joints_)
   {
-    const int32_t pos_raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_POSITION);
-    const int32_t vel_raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_VELOCITY);
-    const uint16_t cur_raw = read2(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_CURRENT);
-    const uint8_t tmp_raw = read1(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_TEMPERATURE);
+    // Każdy odczyt aktualizuje stan TYLKO wtedy, gdy transakcja się powiodła.
+    // Przy błędzie zostaje ostatnia znana wartość - lepsza jest chwilowo
+    // nieaktualna próbka niż zero udające realny pomiar.
+    bool ok = false;
 
-    joint.state_position = raw_to_rad(pos_raw, joint.center_raw);
+    const int32_t pos_raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_POSITION, ok);
+    if (ok)
+    {
+      joint.state_position = raw_to_rad(pos_raw, joint.center_raw);
+    }
+
     // velocity/effort surowe, bez konwersji na jednostki SI — tak samo jak
     // dotychczasowy dynamixel_node.py (JointState.velocity/effort = raw).
-    joint.state_velocity = static_cast<double>(vel_raw);
+    const int32_t vel_raw = read4(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_VELOCITY, ok);
+    if (ok)
+    {
+      joint.state_velocity = static_cast<double>(vel_raw);
+    }
+
     // PRESENT_CURRENT jest w rejestrze liczbą ZE ZNAKIEM (int16) — znak niesie
     // kierunek momentu. Bez tego rzutowania prąd przeciwnego znaku wychodził
     // jako ~65500 zamiast małej wartości ujemnej, co psuło każdy pomiar
     // obciążenia. Jednostka zostaje surowa (1 = 2,69 mA dla XM540).
-    joint.state_effort = static_cast<double>(static_cast<int16_t>(cur_raw));
-    joint.state_temperature = static_cast<double>(tmp_raw);
+    const uint16_t cur_raw = read2(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_CURRENT, ok);
+    if (ok)
+    {
+      joint.state_effort = static_cast<double>(static_cast<int16_t>(cur_raw));
+    }
+
+    const uint8_t tmp_raw = read1(joint.servo_id, DynamixelRegisters::ADDR_PRESENT_TEMPERATURE, ok);
+    if (ok)
+    {
+      joint.state_temperature = static_cast<double>(tmp_raw);
+    }
   }
   return hardware_interface::return_type::OK;
 }
@@ -201,46 +236,56 @@ void DynamixelSystem::write4(uint8_t servo_id, uint16_t addr, int32_t value)
   }
 }
 
-uint8_t DynamixelSystem::read1(uint8_t servo_id, uint16_t addr)
+uint8_t DynamixelSystem::read1(uint8_t servo_id, uint16_t addr, bool & ok)
 {
   uint8_t value = 0;
   uint8_t error = 0;
   const int result = packet_handler_->read1ByteTxRx(port_handler_, servo_id, addr, &value, &error);
-  if (result != COMM_SUCCESS)
+  ok = (result == COMM_SUCCESS);
+  if (!ok)
   {
-    RCLCPP_ERROR(
-      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
-      packet_handler_->getTxRxResult(result));
+    log_comm_error(servo_id, result);
   }
   return value;
 }
 
-uint16_t DynamixelSystem::read2(uint8_t servo_id, uint16_t addr)
+uint16_t DynamixelSystem::read2(uint8_t servo_id, uint16_t addr, bool & ok)
 {
   uint16_t value = 0;
   uint8_t error = 0;
   const int result = packet_handler_->read2ByteTxRx(port_handler_, servo_id, addr, &value, &error);
-  if (result != COMM_SUCCESS)
+  ok = (result == COMM_SUCCESS);
+  if (!ok)
   {
-    RCLCPP_ERROR(
-      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
-      packet_handler_->getTxRxResult(result));
+    log_comm_error(servo_id, result);
   }
   return value;
 }
 
-int32_t DynamixelSystem::read4(uint8_t servo_id, uint16_t addr)
+int32_t DynamixelSystem::read4(uint8_t servo_id, uint16_t addr, bool & ok)
 {
   uint32_t value = 0;
   uint8_t error = 0;
   const int result = packet_handler_->read4ByteTxRx(port_handler_, servo_id, addr, &value, &error);
-  if (result != COMM_SUCCESS)
+  ok = (result == COMM_SUCCESS);
+  if (!ok)
   {
-    RCLCPP_ERROR(
-      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
-      packet_handler_->getTxRxResult(result));
+    log_comm_error(servo_id, result);
   }
   return static_cast<int32_t>(value);
+}
+
+void DynamixelSystem::log_comm_error(uint8_t servo_id, int result)
+{
+  // Dławione: pojedynczy zgubiony pakiet jest na tej magistrali normą (rzędu
+  // procenta), a nieprzytłumiony RCLCPP_ERROR przy 50 Hz i czterech odczytach
+  // na serwo zasypuje log setkami linii i przykrywa komunikaty, które naprawdę
+  // coś znaczą. Licznik w treści pokazuje skalę zjawiska mimo dławienia.
+  ++comm_error_count_;
+  RCLCPP_ERROR_THROTTLE(
+    logger_, *clock_, 2000,
+    "Błąd komunikacji z serwem ID=%d: %s (łącznie błędów: %lu)", servo_id,
+    packet_handler_->getTxRxResult(result), static_cast<unsigned long>(comm_error_count_));
 }
 
 }  // namespace hardware_controller

@@ -69,9 +69,14 @@ private:
 
   void write1(uint8_t servo_id, uint16_t addr, uint8_t value);
   void write4(uint8_t servo_id, uint16_t addr, int32_t value);
-  uint8_t read1(uint8_t servo_id, uint16_t addr);
-  uint16_t read2(uint8_t servo_id, uint16_t addr);
-  int32_t read4(uint8_t servo_id, uint16_t addr);
+  // Odczyty raportują powodzenie przez `ok`. Bez tego nieudana transakcja była
+  // nie do odróżnienia od poprawnie odczytanego zera i wchodziła do stanu jointa
+  // jako realna wartość - dla pozycji oznaczało to skok o cały offset (na naszym
+  // sprzęcie -234 stopnie) w ~1,6% próbek, co psuło każdy pomiar.
+  uint8_t read1(uint8_t servo_id, uint16_t addr, bool & ok);
+  uint16_t read2(uint8_t servo_id, uint16_t addr, bool & ok);
+  int32_t read4(uint8_t servo_id, uint16_t addr, bool & ok);
+  void log_comm_error(uint8_t servo_id, int result);
 
   std::string device_port_;
   int baud_rate_{1000000};
@@ -91,6 +96,8 @@ private:
   dynamixel::PacketHandler * packet_handler_{nullptr};
 
   rclcpp::Logger logger_{rclcpp::get_logger("DynamixelSystem")};
+  rclcpp::Clock::SharedPtr clock_{std::make_shared<rclcpp::Clock>(RCL_STEADY_TIME)};
+  uint64_t comm_error_count_{0};
 };
 
 }  // namespace hardware_controller
