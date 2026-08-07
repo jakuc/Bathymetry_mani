@@ -20,6 +20,7 @@
   <xacro:arg name="use_servo" default="true"/>
   <xacro:arg name="use_echosounder" default="true"/>
   <xacro:arg name="use_gnss" default="true"/>
+  <xacro:arg name="use_imu" default="true"/>
 
   <!--
     servo_id: adres serwa na magistrali Dynamixel. Adres siedzi w EEPROM serwa,
@@ -156,6 +157,52 @@
         <state_interface name="ntrip_status"/>
         <state_interface name="ntrip_error"/>
         <state_interface name="data_count"/>
+      </sensor>
+    </ros2_control>
+  </xacro:if>
+
+  <!--
+    IMU GY-955 (BNO055 z własnym MCU) po UART. Na Pi to /dev/serial0 (ttyS0),
+    czyli wbudowany port na pinach 8/10 - NIE jest to USB, więc nie ma tu reguły
+    udev: ścieżka jest stała.
+
+    UWAGA na dwie rzeczy przy pierwszym uruchomieniu na świeżej płytce:
+      - `serial-getty@ttyS0` musi być wyłączony, bo inaczej agetty trzyma port
+        (i trzyma go w grupie `tty` zamiast `dialout`);
+      - z /boot/firmware/cmdline.txt trzeba usunąć `console=serial0,115200`.
+    Obie rzeczy robi deploy/rpi/install.sh.
+
+    module_cmd 0xB5 = AUTO + 50 Hz + kwaternion + żyroskop + akcelerometr, czyli
+    dokładnie komplet dla sensor_msgs/Imu. Kwaternion, a nie Euler, bo kanały
+    Eulera tego modułu nazywają się odwrotnie niż w REP-103.
+  -->
+  <xacro:if value="$(arg use_imu)">
+    <ros2_control name="imu" type="sensor">
+      <hardware>
+        <plugin>hardware_controller/ImuSensor</plugin>
+        <param name="device_port">/dev/serial0</param>
+        <param name="baud_rate">9600</param>
+        <param name="module_cmd">0xB5</param>
+        <param name="configure_module">true</param>
+        <!-- Kolejność składowych kwaternionu w ramce; "xyzw", jeśli orientacja
+             wyjdzie przekręcona (instrukcja modułu tego nie precyzuje). -->
+        <param name="quaternion_order">wxyz</param>
+      </hardware>
+      <sensor name="imu">
+        <state_interface name="orientation.x"/>
+        <state_interface name="orientation.y"/>
+        <state_interface name="orientation.z"/>
+        <state_interface name="orientation.w"/>
+        <state_interface name="angular_velocity.x"/>
+        <state_interface name="angular_velocity.y"/>
+        <state_interface name="angular_velocity.z"/>
+        <state_interface name="linear_acceleration.x"/>
+        <state_interface name="linear_acceleration.y"/>
+        <state_interface name="linear_acceleration.z"/>
+        <state_interface name="calib_sys"/>
+        <state_interface name="calib_gyr"/>
+        <state_interface name="calib_acc"/>
+        <state_interface name="calib_mag"/>
       </sensor>
     </ros2_control>
   </xacro:if>

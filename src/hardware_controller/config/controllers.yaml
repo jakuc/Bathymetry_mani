@@ -17,6 +17,9 @@ controller_manager:
     gnss_broadcaster:
       type: hardware_controller/GnssBroadcaster
 
+    imu_sensor_broadcaster:
+      type: imu_sensor_broadcaster/IMUSensorBroadcaster
+
 forward_position_controller:
   ros__parameters:
     joints:
@@ -37,6 +40,13 @@ temperature_broadcaster:
   ros__parameters:
     sensor_name: echosounder
     frame_id: sonar_link
+
+imu_sensor_broadcaster:
+  ros__parameters:
+    sensor_name: imu
+    # Frame samego modułu. Gdzie on siedzi na kadłubie, opisuje URDF — orientację
+    # publikujemy w układzie czujnika i nie przekręcamy jej w kodzie.
+    frame_id: imu_link
 
 gnss_broadcaster:
   ros__parameters:

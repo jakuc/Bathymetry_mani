@@ -1,0 +1,12 @@
+# IMU GY-955 (BNO055 z własnym MCU) na wbudowanym UART-cie Raspberry Pi.
+#
+# W odróżnieniu od pozostałych czujników zestawu ten nie siedzi na USB, więc nie
+# ma tu żadnego dopasowania po VID/PID ani dowiązania /dev/imu - ścieżka
+# /dev/serial0 -> ttyS0 jest stała i tworzy ją sam system.
+#
+# Regułą załatwiamy jedno: PRAWA DOSTĘPU. Gdy przy starcie systemu port trzymał
+# serial-getty@ttyS0, węzeł urządzenia zostaje w grupie `tty` (crw--w---- root
+# tty) i nasz proces nie ma jak go otworzyć, nawet po wyłączeniu getty - bo
+# wyłączenie usługi nie tworzy węzła na nowo. Wymuszamy więc grupę `dialout`,
+# tak samo jak dla wszystkich pozostałych portów szeregowych zestawu.
+KERNEL=="ttyS0", GROUP="dialout", MODE="0660"

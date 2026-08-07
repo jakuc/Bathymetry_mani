@@ -23,6 +23,7 @@ add_library(hardware_controller SHARED
   src/temperature_broadcaster.cpp
   src/gnss_sensor.cpp
   src/gnss_broadcaster.cpp
+  src/imu_sensor.cpp
 )
 target_include_directories(hardware_controller PRIVATE
   include

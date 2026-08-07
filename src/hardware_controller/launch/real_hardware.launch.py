@@ -11,6 +11,7 @@ Argumenty:
   use_servo        (bool, true)  – czy deklarować w URDF serwo XM540 (wymaga /dev/u2d2)
   use_echosounder  (bool, true)  – czy deklarować w URDF echosondę SLD-100 (wymaga /dev/echosounder)
   use_gnss         (bool, true)  – czy deklarować w URDF odbiornik GNSS mosaic-H (wymaga /dev/gnss)
+  use_imu          (bool, true)  – czy deklarować w URDF IMU GY-955 (wymaga /dev/serial0)
   use_rviz         (bool, false) – czy odpalać rviz2
   servo_id         (int, 1)      – adres serwa na magistrali (siedzi w EEPROM serwa)
   profile_velocity (int, 30)     – profil prędkości serwa; 0 = BEZ profilu, czyli
@@ -34,6 +35,7 @@ Węzły (w kolejności startu, zależnie od use_servo/use_echosounder/use_rviz):
   3. spawnery: joint_state_broadcaster + forward_position_controller (jeśli use_servo),
                range_sensor_broadcaster + temperature_broadcaster (jeśli use_echosounder),
                gnss_broadcaster (jeśli use_gnss)
+               imu_sensor_broadcaster (jeśli use_imu)
   4. goal_position_bridge        – most /servo/goal_position -> forward_position_controller (jeśli use_servo)
   5. xm540_bringup/manual_node   – nietknięty, sterowanie ręczne przez /set_orientation (jeśli use_servo)
   6. rviz2 (jeśli use_rviz)
@@ -64,6 +66,7 @@ def _launch_setup(context, *args, **kwargs):
     use_servo = LaunchConfiguration("use_servo").perform(context).lower() == "true"
     use_echosounder = LaunchConfiguration("use_echosounder").perform(context).lower() == "true"
     use_gnss = LaunchConfiguration("use_gnss").perform(context).lower() == "true"
+    use_imu = LaunchConfiguration("use_imu").perform(context).lower() == "true"
     use_rviz = LaunchConfiguration("use_rviz").perform(context).lower() == "true"
     use_servo_z = LaunchConfiguration("use_servo_z").perform(context).lower() == "true"
 
@@ -76,6 +79,7 @@ def _launch_setup(context, *args, **kwargs):
         "use_servo": "true" if use_servo else "false",
         "use_echosounder": "true" if use_echosounder else "false",
         "use_gnss": "true" if use_gnss else "false",
+        "use_imu": "true" if use_imu else "false",
         "servo_id": LaunchConfiguration("servo_id").perform(context),
         "profile_velocity": LaunchConfiguration("profile_velocity").perform(context),
         "profile_acceleration": LaunchConfiguration("profile_acceleration").perform(context),
@@ -138,6 +142,7 @@ def _launch_setup(context, *args, **kwargs):
                 ("temperature_broadcaster/temperature", "echosounder/temperature"),
                 ("gnss_broadcaster/fix", "gnss/fix"),
                 ("gnss_broadcaster/heading", "gnss/heading"),
+                ("imu_sensor_broadcaster/imu", "imu/data"),
             ],
         ),
     ]
@@ -177,6 +182,9 @@ def _launch_setup(context, *args, **kwargs):
     if use_gnss:
         nodes.append(TimerAction(period=4.0, actions=[_spawner("gnss_broadcaster")]))
 
+    if use_imu:
+        nodes.append(TimerAction(period=4.5, actions=[_spawner("imu_sensor_broadcaster")]))
+
     if use_rviz:
         nodes.append(Node(
             package="rviz2",
@@ -195,6 +203,8 @@ def generate_launch_description():
                               description="Czy deklarować w URDF serwo XM540 (wymaga /dev/u2d2)"),
         DeclareLaunchArgument("use_echosounder", default_value="true",
                               description="Czy deklarować w URDF echosondę SLD-100 (wymaga /dev/echosounder)"),
+        DeclareLaunchArgument("use_imu", default_value="true",
+                              description="Czy deklarować w URDF IMU GY-955 (wymaga /dev/serial0)"),
         DeclareLaunchArgument("use_gnss", default_value="true",
                               description="Czy deklarować w URDF odbiornik GNSS mosaic-H (wymaga /dev/gnss)"),
         DeclareLaunchArgument("use_rviz", default_value="false",
