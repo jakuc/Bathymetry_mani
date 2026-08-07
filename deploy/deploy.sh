@@ -27,7 +27,17 @@ RPI_USER="${RPI_USER:-ubuntu}"
 REMOTE_WS="${REMOTE_WS:-bathset_ws}"
 RPI_OUI="b8:27:eb"          # pula MAC Raspberry Pi Foundation
 NAT_SUBNET="10.42.0"
-LAUNCH_ARGS="${LAUNCH_ARGS:-use_servo:=true use_echosounder:=false use_gnss:=false use_rviz:=false servo_id:=2}"
+# Domyślne argumenty odzwierciedlają to, co jest FIZYCZNIE podpięte do płytki.
+# To nie jest kosmetyka: controller_manager twardo pada (abort całego procesu),
+# jeśli zadeklarowany w URDF komponent nie osiągnie stanu "active" - a to się
+# dzieje zawsze, gdy urządzenia nie ma na magistrali. Dlatego echosonda i GNSS
+# są tu wyłączone, mimo że w samym launchu domyślnie są włączone; włącz je,
+# gdy je podepniesz.
+#
+# Adresy serw (EEPROM serwa, sprawdzone skanem magistrali 2026-08-07):
+#   ID 1 = człon 2 (głowica) -> xm540_joint
+#   ID 2 = człon 1           -> xm540_joint_z
+LAUNCH_ARGS="${LAUNCH_ARGS:-use_servo:=true use_servo_z:=true servo_id:=1 servo_id_z:=2 use_imu:=true use_echosounder:=false use_gnss:=false use_rviz:=false}"
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 
@@ -128,7 +138,7 @@ if [ "$DO_STATUS" = 1 ]; then
         echo \"--- workspace ---\";  ls ~/${REMOTE_WS}/install/setup.bash 2>/dev/null || echo \"BRAK install/\"
         echo \"--- paczki ---\";     ros2 pkg list 2>/dev/null | grep -E \"hardware_controller|bathset_description|xm540\" || echo \"nie widać\"
         echo \"--- urządzenia ---\"
-        for d in /dev/u2d2 /dev/echosounder /dev/gnss /dev/gnss_aux; do
+        for d in /dev/u2d2 /dev/echosounder /dev/gnss /dev/gnss_aux /dev/serial0; do
             [ -e \"\$d\" ] && echo \"  [ok]   \$d\" || echo \"  [brak] \$d\"
         done
         echo \"--- zasoby ---\";     free -h | head -3
