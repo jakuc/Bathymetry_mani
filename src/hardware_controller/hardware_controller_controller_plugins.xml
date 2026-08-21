@@ -3,6 +3,10 @@
          base_class_type="controller_interface::ControllerInterface">
     <description>Publikuje state_interface "&lt;sensor_name&gt;/water_temperature" jako sensor_msgs/msg/Temperature.</description>
   </class>
+  <class name="hardware_controller/LaserBroadcaster" type="hardware_controller::LaserBroadcaster"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>Publikuje stany LaserSensor jako sensor_msgs/msg/Range (~/range) — tylko świeże pomiary, ze znacznikiem czasu pomiaru.</description>
+  </class>
   <class name="hardware_controller/GnssBroadcaster" type="hardware_controller::GnssBroadcaster"
          base_class_type="controller_interface::ControllerInterface">
     <description>Publikuje stany GnssSensor jako sensor_msgs/msg/NavSatFix (~/fix) i heading jako geometry_msgs/msg/QuaternionStamped (~/heading).</description>

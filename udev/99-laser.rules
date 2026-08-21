@@ -1,0 +1,7 @@
+# Dalmierz Sharp GP2Y0A710K0F na Arduino Nano (klon z układem CH340).
+# Vendor 1a86, Product 7523 - w tym zestawie jedyny CH340, więc rozróżnienie
+# jest jednoznaczne: U2D2 to FTDI 0403:6014, echosonda FTDI 0403:6015,
+# a GNSS zgłasza się jako CDC-ACM. Bez tej reguły Nano siedzi na gołym
+# /dev/ttyUSB0, którego numer przeskakuje zależnie od kolejności wpinania.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
+    SYMLINK+="laser", GROUP="dialout", MODE="0666"

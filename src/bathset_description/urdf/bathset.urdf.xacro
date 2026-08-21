@@ -12,5 +12,6 @@
 
   <xacro:include filename="$(find xm540_bringup)/urdf/xm540_manipulator.urdf" />
   <xacro:include filename="$(find bathset_description)/urdf/xm540.ros2_control.xacro" />
+  <xacro:include filename="$(find bathset_description)/urdf/laser.xacro" />
 
 </robot>

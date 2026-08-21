@@ -73,7 +73,7 @@ check_devices() {
 
     local missing=0
     DEVICE_ARGS=()
-    for dev in /dev/u2d2 /dev/echosounder /dev/gnss /dev/gnss_aux; do
+    for dev in /dev/u2d2 /dev/echosounder /dev/gnss /dev/gnss_aux /dev/laser; do
         if [ -e "$dev" ]; then
             echo "  [ok]   $dev"
             DEVICE_ARGS+=(--device="$dev:$dev")

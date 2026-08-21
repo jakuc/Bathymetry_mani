@@ -32,6 +32,8 @@ services:
       # Drugi port CDC odbiornika - do konfiguracji i podglądu RTK
       # (scripts/gnss_rtk.py) bez zabierania portu wtyczce GnssSensor.
       - /dev/gnss_aux:/dev/gnss_aux
+      # Arduino Nano z dalmierzem Sharp na głowicy (udev/99-laser.rules)
+      - /dev/laser:/dev/laser
 
     volumes:
       - ../src:/workspace/src

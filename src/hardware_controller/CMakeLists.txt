@@ -24,6 +24,8 @@ add_library(hardware_controller SHARED
   src/gnss_sensor.cpp
   src/gnss_broadcaster.cpp
   src/imu_sensor.cpp
+  src/laser_sensor.cpp
+  src/laser_broadcaster.cpp
 )
 target_include_directories(hardware_controller PRIVATE
   include
@@ -60,6 +62,16 @@ install(
   PROGRAMS scripts/goal_position_bridge.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME goal_position_bridge
+)
+install(
+  PROGRAMS scripts/spherical_sweep_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME spherical_sweep_node
+)
+install(
+  PROGRAMS scripts/cloud_collector_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME cloud_collector_node
 )
 
 ament_export_include_directories(include)

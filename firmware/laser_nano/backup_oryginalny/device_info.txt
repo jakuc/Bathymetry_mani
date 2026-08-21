@@ -1,0 +1,3 @@
+         Hardware Version: 3
+         Firmware Version: 4.4
+avrdude: Device signature = 0x1e950f (probably m328p)

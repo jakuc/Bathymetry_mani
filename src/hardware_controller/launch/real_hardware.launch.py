@@ -69,6 +69,7 @@ def _launch_setup(context, *args, **kwargs):
     use_imu = LaunchConfiguration("use_imu").perform(context).lower() == "true"
     use_rviz = LaunchConfiguration("use_rviz").perform(context).lower() == "true"
     use_servo_z = LaunchConfiguration("use_servo_z").perform(context).lower() == "true"
+    use_laser = LaunchConfiguration("use_laser").perform(context).lower() == "true"
 
     hw_share = get_package_share_directory("hardware_controller")
     bringup_share = get_package_share_directory("xm540_bringup")
@@ -83,10 +84,20 @@ def _launch_setup(context, *args, **kwargs):
         "servo_id": LaunchConfiguration("servo_id").perform(context),
         "profile_velocity": LaunchConfiguration("profile_velocity").perform(context),
         "profile_acceleration": LaunchConfiguration("profile_acceleration").perform(context),
+        "position_p_gain": LaunchConfiguration("position_p_gain").perform(context),
+        "position_i_gain": LaunchConfiguration("position_i_gain").perform(context),
+        "position_d_gain": LaunchConfiguration("position_d_gain").perform(context),
         "use_servo_z": "true" if use_servo_z else "false",
         "servo_id_z": LaunchConfiguration("servo_id_z").perform(context),
         "center_raw": LaunchConfiguration("center_raw").perform(context),
         "center_raw_z": LaunchConfiguration("center_raw_z").perform(context),
+        "use_laser": "true" if use_laser else "false",
+        "laser_port": LaunchConfiguration("laser_port").perform(context),
+        "laser_xyz": LaunchConfiguration("laser_xyz").perform(context),
+        "laser_rpy": LaunchConfiguration("laser_rpy").perform(context),
+        "laser_calib_table": LaunchConfiguration("laser_calib_table").perform(context),
+        "laser_calib_a": LaunchConfiguration("laser_calib_a").perform(context),
+        "laser_calib_b": LaunchConfiguration("laser_calib_b").perform(context),
     }
     robot_description_xml = xacro.process_file(xacro_path, mappings=mappings).toxml()
 
@@ -143,6 +154,11 @@ def _launch_setup(context, *args, **kwargs):
                 ("gnss_broadcaster/fix", "gnss/fix"),
                 ("gnss_broadcaster/heading", "gnss/heading"),
                 ("imu_sensor_broadcaster/imu", "imu/data"),
+                ("laser_broadcaster/range", "laser/range"),
+                # Surowe ADC pod /laser/raw - kolektor paruje je z Range po
+                # stemplu. Bez tego remapu kolektor nie widzi nic i zapisuje
+                # CSV z pustymi kolumnami adc/adc_spread (sprawdzone na żywo).
+                ("laser_broadcaster/raw", "laser/raw"),
             ],
         ),
     ]
@@ -185,6 +201,9 @@ def _launch_setup(context, *args, **kwargs):
     if use_imu:
         nodes.append(TimerAction(period=4.5, actions=[_spawner("imu_sensor_broadcaster")]))
 
+    if use_laser:
+        nodes.append(TimerAction(period=5.0, actions=[_spawner("laser_broadcaster")]))
+
     if use_rviz:
         nodes.append(Node(
             package="rviz2",
@@ -215,13 +234,39 @@ def generate_launch_description():
                               description="Profile velocity serwa (0 = bez profilu, maksymalna prędkość!)"),
         DeclareLaunchArgument("profile_acceleration", default_value="10",
                               description="Profile acceleration serwa (0 = bez profilu)"),
+        # Nastawy pętli położenia. Fabryczne 800/0/0 zostawiają uchyb ustalony
+        # 0,31 st (elewacja) i 0,75 st (azymut) - przy czystym P oś staje tam, gdzie
+        # moment P równoważy tarcie. 1600/150 zbija to do 0,02 / 0,15 st, bez
+        # przeregulowania i bez wzrostu prądu (pomiar 2026-08-17).
+        DeclareLaunchArgument("position_p_gain", default_value="1600",
+                              description="Position P Gain serwa (fabrycznie 800)"),
+        DeclareLaunchArgument("position_i_gain", default_value="150",
+                              description="Position I Gain serwa (fabrycznie 0) - usuwa uchyb ustalony"),
+        DeclareLaunchArgument("position_d_gain", default_value="0",
+                              description="Position D Gain serwa (fabrycznie 0)"),
         DeclareLaunchArgument("use_servo_z", default_value="false",
                               description="Czy deklarować drugą oś xm540_joint_z (wyłącza most i manual_node)"),
         DeclareLaunchArgument("servo_id_z", default_value="2",
                               description="Adres serwa drugiej osi na magistrali"),
-        DeclareLaunchArgument("center_raw", default_value="2670",
-                              description="Surowa pozycja serwa odpowiadająca zeru xm540_joint"),
-        DeclareLaunchArgument("center_raw_z", default_value="3353",
-                              description="Surowa pozycja serwa odpowiadająca zeru xm540_joint_z"),
+        DeclareLaunchArgument("center_raw", default_value="1154",
+                              description="Zero xm540_joint (elewacja); okno EEPROM serwa 130..2178 = +/-90 st. Ustawione 2026-08-20."),
+        DeclareLaunchArgument("center_raw_z", default_value="2048",
+                              description="Zero xm540_joint_z (azymut). MUSI być 2048: +/-180 st mieści się w trybie position tylko wokół środka enkodera."),
+        DeclareLaunchArgument("use_laser", default_value="false",
+                              description="Czy deklarować dalmierz Sharp na głowicy (wymaga /dev/laser)"),
+        DeclareLaunchArgument("laser_port", default_value="/dev/laser",
+                              description="Port szeregowy Arduino Nano z dalmierzem"),
+        DeclareLaunchArgument("laser_xyz", default_value="0 0 0",
+                              description="Położenie punktu pomiaru dalmierza względem link_2 - NIEZMIERZONE"),
+        DeclareLaunchArgument("laser_rpy", default_value="0 3.14159 0",
+                              description="Orientacja osi optycznej względem link_2; domyślnie jak sonar w symulacji"),
+        DeclareLaunchArgument("laser_calib_table",
+                              default_value="328.77:3.69 336.00:2.93 344.05:2.60 371.40:1.94 437.60:1.34 477.22:1.14 503.03:1.05",
+                              description="Kalibracja dalmierza: węzły ADC:metry, zmierzone 2026-08-20; "
+                                          "między nimi PCHIP, poza skrajnymi NaN. Puste = ścieżka zapasowa calib_a/calib_b"),
+        DeclareLaunchArgument("laser_calib_a", default_value="134.44",
+                              description="ZAPASOWE (tylko przy pustym laser_calib_table): stała A modelu V=A/L_cm+B z karty katalogowej"),
+        DeclareLaunchArgument("laser_calib_b", default_value="1.1556",
+                              description="ZAPASOWE (tylko przy pustym laser_calib_table): stała B modelu V=A/L_cm+B z karty katalogowej"),
         OpaqueFunction(function=_launch_setup),
     ])

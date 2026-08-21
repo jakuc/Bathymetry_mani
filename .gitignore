@@ -27,3 +27,7 @@ src/xm540_bringup/meshes/big_lake_simp_tiles/
 # Postprocessing i wyniki pomiarów — chmury punktów, tabele, wykresy, raporty.
 # Rosną w gigabajty i są odtwarzalne ze skryptów, więc trzymamy je poza repo.
 analysis/
+
+# Skany dalmierza - chmury punktow i CSV z sweepow. Rosna szybko i sa
+# odtwarzalne z plytki (~/scans), wiec trzymamy je poza repo.
+scans/

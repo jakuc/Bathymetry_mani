@@ -20,6 +20,9 @@ controller_manager:
     imu_sensor_broadcaster:
       type: imu_sensor_broadcaster/IMUSensorBroadcaster
 
+    laser_broadcaster:
+      type: hardware_controller/LaserBroadcaster
+
 forward_position_controller:
   ros__parameters:
     joints:
@@ -47,6 +50,21 @@ imu_sensor_broadcaster:
     # Frame samego modułu. Gdzie on siedzi na kadłubie, opisuje URDF — orientację
     # publikujemy w układzie czujnika i nie przekręcamy jej w kodzie.
     frame_id: imu_link
+
+laser_broadcaster:
+  ros__parameters:
+    sensor_name: laser
+    frame_id: laser_link
+    # Zakres wiarygodności Sharpa GP2Y0A710K0F. Poniżej 1 m krzywa czujnika się
+    # zawija, powyżej 3 m kończy mu się rozdzielczość (przy 3,2 m jedno zliczenie
+    # ADC to ponad 10 cm) - wtyczka zwraca tam NaN, a nie liczbę. Musi się zgadzać
+    # z min_range/max_range podanymi wtyczce w laser.xacro, bo tu opisuje tylko
+    # to, co ląduje w polach wiadomości.
+    min_range: 1.0
+    max_range: 3.0
+    # Karta katalogowa nie podaje szerokości wiązki; 0.0 jak przy echosondzie.
+    field_of_view: 0.0
+    radiation_type: 1  # sensor_msgs/Range::INFRARED
 
 gnss_broadcaster:
   ros__parameters:

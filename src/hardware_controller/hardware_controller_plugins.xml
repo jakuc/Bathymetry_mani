@@ -11,6 +11,10 @@
          base_class_type="hardware_interface::SensorInterface">
     <description>Odbiornik GNSS Septentrio mosaic-H (dwuantenowy) — NMEA GGA/GST/HDT po USB CDC, z automatyczną konfiguracją odbiornika.</description>
   </class>
+  <class name="hardware_controller/LaserSensor" type="hardware_controller::LaserSensor"
+         base_class_type="hardware_interface::SensorInterface">
+    <description>Dalmierz Sharp GP2Y0A710K0F na Arduino Nano — ramki LSR po USB-serial, przeliczenie ADC na metry po stronie hosta.</description>
+  </class>
   <class name="hardware_controller/ImuSensor" type="hardware_controller::ImuSensor"
          base_class_type="hardware_interface::SensorInterface">
     <description>IMU GY-955 (BNO055 z własnym MCU) — orientacja, żyroskop i akcelerometr po UART, z automatyczną konfiguracją modułu.</description>

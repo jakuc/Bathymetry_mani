@@ -1,0 +1,124 @@
+<?xml version="1.0"?>
+<!--
+  Dalmierz laserowy Sharp GP2Y0A710K0F na głowicy - opis geometrii RAZEM
+  z blokiem <ros2_control>, w jednym pliku i celowo osobno od
+  xm540.ros2_control.xacro.
+
+  Powód: ze wszystkich czujników zestawu tylko ten ma własny link w drzewie TF,
+  bo tylko on jest używany do REKONSTRUKCJI. Echosonda, IMU i GNSS mają w
+  controllers.yaml frame_id (sonar_link, imu_link, gnss_link), których nikt
+  nigdy nie zadeklarował w URDF - dla nich to bez znaczenia, bo nikt ich
+  odczytów nie transformuje. Tutaj transformacja jest całym pomiarem, więc
+  laser_link musi istnieć naprawdę.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="use_laser" default="false"/>
+
+  <!--
+    GEOMETRIA MONTAŻU - NIEZMIERZONA (stan 2026-08-17).
+
+    laser_xyz to położenie punktu odniesienia pomiaru Sharpa względem początku
+    link_2, czyli względem osi obrotu głowicy. Zero oznacza "promień wychodzi
+    dokładnie z osi jointa", co jest fizycznie nieprawdą - czujnik siedzi na
+    ramieniu. Skutek jest konkretny i podstępny: chmura będzie wewnętrznie
+    spójna, ale obrócona i przesunięta względem prawdy, czyli będzie wyglądać
+    poprawnie. Do zmierzenia przed jakimkolwiek wnioskiem ilościowym.
+
+    laser_rpy domyślnie odwzorowuje montaż echosondy z modelu symulacyjnego
+    (sonar_joint, rpy="0 3.14159 0"): obrót o pi wokół Y ustawia oś pomiarową
+    +X laser_link wzdłuż -X link_2. To ZAŁOŻENIE przeniesione z sonaru, nie
+    pomiar - jeśli chmura wyjdzie odbita, to jest pierwsze miejsce do sprawdzenia.
+
+    Oba parametry są argumentami launcha, więc korekta po pomiarze nie wymaga
+    dotykania tego pliku:
+      ros2 launch hardware_controller sweep_laser.launch.py laser_xyz:="-0.137 -0.0555 0"
+  -->
+  <xacro:arg name="laser_xyz" default="0 0 0"/>
+  <xacro:arg name="laser_rpy" default="0 3.14159 0"/>
+
+  <xacro:arg name="laser_port" default="/dev/laser"/>
+
+  <!--
+    KALIBRACJA - tabela "ADC:metry", zmierzona 2026-08-20 na tym egzemplarzu
+    (7 punktów, po 60 ramek każdy, miarką od czoła czujnika). Między węzłami
+    wtyczka interpoluje PCHIP-em; poza skrajnymi węzłami zwraca NaN.
+
+    Dlaczego tabela, a nie para stałych: karta katalogowa obiecuje V = a/L + b,
+    ale dla tego egzemplarza nachylenie dV/d(1/L) spada monotonicznie
+    167,8 -> 147,9 -> 140,2 -> 102,1 -> 91,0 -> 50,2 zamiast być stałe.
+    W walidacji leave-one-out hiperbola myli się o 26 cm, tabela o 4,5 cm.
+    Szczegóły w nagłówku laser_sensor.hpp.
+
+    Kolejność węzłów jest dowolna (wtyczka sortuje), ale wskazanie musi być
+    monotoniczne - rosnące ADC to malejąca odległość. Złamanie tego jest
+    twardym błędem, bo oznacza pomyłkę w pomiarze, a interpolator wygładziłby
+    ją w cichy błąd.
+
+    Dokładanie punktów: scripts/laser_test.py w trybie calib zbiera punkt do
+    CSV, a tryb table wypisze z tego CSV gotowy wiersz do wklejenia tutaj.
+    (Nazw przełączników nie da się tu zapisać: XML nie dopuszcza podwójnego
+    myślnika w komentarzu.)
+  -->
+  <xacro:arg name="laser_calib_table"
+             default="328.77:3.69 336.00:2.93 344.05:2.60 371.40:1.94 437.60:1.34 477.22:1.14 503.03:1.05"/>
+
+  <!--
+    Ścieżka ZAPASOWA, działa tylko przy pustym laser_calib_table - żeby stack
+    wstał bez kalibracji zamiast paść. Wartości z karty katalogowej (100 cm ->
+    2,50 V, 550 cm -> 1,40 V), mylą się o kilkanaście cm.
+  -->
+  <xacro:arg name="laser_calib_a" default="134.44"/>
+  <xacro:arg name="laser_calib_b" default="1.1556"/>
+
+  <!--
+    Zakres wiarygodności. Obie granice są zmierzone, nie ostrożnościowe.
+
+    Dolna: poniżej ~100 cm charakterystyka Sharpa się zawija i 40 cm daje to
+    samo napięcie co ~150 cm, bez żadnej sygnalizacji.
+
+    Górna 3,0 m (nie 5,5 m z karty katalogowej, które nigdy nie było
+    weryfikowane): powyżej tego czujnikowi kończy się ROZDZIELCZOŚĆ. Jedno
+    zliczenie ADC to 0,3 cm przy 1 m, ale 6 cm przy 2,93 m i ponad 10 cm przy
+    3,2 m; 90% całego zakresu ADC zużywa się na pierwsze 1,5 m. Odczyt zza tej
+    granicy wygląda tak samo pewnie jak każdy inny i nie niesie odległości.
+
+    Wszystko poza tym zakresem wtyczka zwraca jako NaN.
+  -->
+  <xacro:arg name="laser_min_range" default="1.0"/>
+  <xacro:arg name="laser_max_range" default="3.0"/>
+
+  <xacro:if value="$(arg use_laser)">
+
+    <link name="laser_link"/>
+
+    <joint name="laser_joint" type="fixed">
+      <parent link="link_2"/>
+      <child link="laser_link"/>
+      <origin xyz="$(arg laser_xyz)" rpy="$(arg laser_rpy)"/>
+    </joint>
+
+    <ros2_control name="laser" type="sensor">
+      <hardware>
+        <plugin>hardware_controller/LaserSensor</plugin>
+        <param name="device_port">$(arg laser_port)</param>
+        <param name="baud_rate">115200</param>
+        <param name="calib_table">$(arg laser_calib_table)</param>
+        <param name="calib_a">$(arg laser_calib_a)</param>
+        <param name="calib_b">$(arg laser_calib_b)</param>
+        <param name="min_range">$(arg laser_min_range)</param>
+        <param name="max_range">$(arg laser_max_range)</param>
+        <!-- Otwarcie portu resetuje Nano przez DTR; tyle trwa bootloader. -->
+        <param name="settle_ms">2000</param>
+      </hardware>
+      <sensor name="laser">
+        <state_interface name="range"/>
+        <state_interface name="adc"/>
+        <state_interface name="adc_spread"/>
+        <state_interface name="sample_time"/>
+      </sensor>
+    </ros2_control>
+
+  </xacro:if>
+
+</robot>
