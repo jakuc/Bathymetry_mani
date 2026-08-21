@@ -1,0 +1,55 @@
+# Podgląd topików z płytki bathset — ze stacji, bez podpiętego sprzętu.
+#
+# PO CO OSOBNY PLIK: docker-compose.real.yml żąda /dev/u2d2, /dev/echosounder
+# i /dev/gnss, których na stacji nie ma (siedzą na płytce), więc by się nie
+# podniósł. Tutaj tych urządzeń nie ma - to czysty klient ROS-a.
+#
+# PO CO W OGÓLE KONTENER: stacja ma natywnie ROS 2 Jazzy, płytka Humble, a te
+# dwa wydania nie gadają ze sobą (inne wersje typów i middleware). Kontener
+# daje Humble po stronie stacji, czyli wspólny język z płytką.
+#
+# Użycie:
+#   docker compose -f docker/docker-compose.monitor.yml run --rm monitor
+#   # w kontenerze:
+#   ros2 topic list
+#   ros2 topic echo /echosounder/temperature
+#   rviz2                       # DISPLAY jest przekazany
+#
+# Wymaga podniesionego NAT-u do płytki:  ./deploy/deploy.sh --net
+#
+# Gdyby `ros2 topic list` był pusty mimo działającego stacku na płytce:
+# stacja ma kilka interfejsów sieciowych (enp67s0 do płytki + karta USB do
+# internetu) i Fast DDS potrafi rozgłaszać się przez niewłaściwy. Wtedy
+# odkomentuj FASTRTPS_DEFAULT_PROFILES_FILE poniżej - profil przypina
+# diskowery do podsieci płytki.
+
+services:
+  monitor:
+    image: mani_ros:real
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.real
+    container_name: mani_monitor
+
+    # host: kontener widzi enp67s0 (10.42.0.1) i multicast do płytki.
+    # Bez tego discovery DDS nie ma jak dojść do 10.42.0.x.
+    network_mode: host
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      # MUSI się zgadzać z płytką. Na płytce ustawia to /etc/profile.d/bathset.sh
+      # (deploy/rpi/install.sh, faza 4), domyślnie 0.
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      # WŁĄCZONE NA STAŁE, nie opcjonalne: bez tego profilu `ros2 topic list`
+      # jest pusty, bo multicast między stacją a płytką nie przechodzi w żadną
+      # stronę (zmierzone 2026-08-17). Profil robi dwie rzeczy - przypina DDS do
+      # enp67s0 i ustawia discovery unicastem pod adres płytki.
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/workspace/docker/config/fastdds_bathset.xml
+
+    volumes:
+      - ../src:/workspace/src:ro
+      - ../docker:/workspace/docker:ro
+      - /tmp/.X11-unix:/tmp/.X11-unix
+
+    stdin_open: true
+    tty: true

@@ -12,7 +12,8 @@
 # Fazy (każdą można pominąć odpowiednią flagą):
 #   1 repo ROS   : klucz GPG + packages.ros.org           (--skip-repo)
 #   2 paczki     : ROS Humble + narzędzia do kompilacji   (--skip-packages)
-#   3 udev       : /dev/u2d2, /dev/echosounder, /dev/gnss (--skip-udev)
+#   3 udev       : /dev/u2d2, /dev/echosounder, /dev/gnss,
+#                  /dev/laser (dalmierz na Nano)          (--skip-udev)
 #   3.5 uart     : zwolnienie ttyS0 pod IMU GY-955        (--skip-uart)
 #   4 środowisko : /etc/profile.d/bathset.sh              (--skip-env)
 #   5 zram       : skompresowany swap w RAM               (--skip-zram)
@@ -106,7 +107,7 @@ provision_udev() {
     run "sudo udevadm trigger --subsystem-match=tty --subsystem-match=usb-serial"
     if [ "$DRY_RUN" != 1 ]; then
         sleep 2
-        for d in /dev/u2d2 /dev/echosounder /dev/gnss /dev/gnss_aux /dev/serial0; do
+        for d in /dev/u2d2 /dev/echosounder /dev/gnss /dev/gnss_aux /dev/serial0 /dev/laser; do
             [ -e "$d" ] && info "  [ok]   $d" || info "  [brak] $d (urządzenie niepodpięte?)"
         done
     fi
@@ -150,6 +151,12 @@ provision_uart() {
 # --------------------------------------------------------------------- faza 4
 provision_env() {
     say "Faza 4: środowisko ROS w każdej sesji"
+    # Profil Fast DDS z discovery unicastem - bez niego stacja nie zobaczy
+    # topików płytki, bo multicast między nimi nie przechodzi (pomiar 2026-08-17,
+    # szczegóły w samym pliku).
+    run "sudo install -d -m755 /etc/bathset"
+    run "sudo install -m644 ${HERE}/fastdds_eth.xml /etc/bathset/fastdds_eth.xml"
+
     # profile.d, żeby `ros2 topic list` działało od razu po zalogowaniu - bez
     # tego każda ręczna sesja ląduje bez ROS-a i diagnostyka jest zgadywanką.
     local block
@@ -158,6 +165,11 @@ provision_env() {
 source /opt/ros/${ROS_DISTRO}/setup.bash
 [ -f "\$HOME/bathset_ws/install/setup.bash" ] && source "\$HOME/bathset_ws/install/setup.bash"
 export ROS_DOMAIN_ID=\${ROS_DOMAIN_ID:-0}
+# Discovery unicastem do stacji. UWAGA: to dotyczy tylko sesji interaktywnych -
+# stack odpalany przez deploy.sh --run startuje z powłoki NIELOGOWANEJ, więc
+# ten sam eksport jest powtórzony w generowanym ~/run_stack.sh.
+[ -f /etc/bathset/fastdds_eth.xml ] && \\
+    export FASTRTPS_DEFAULT_PROFILES_FILE=/etc/bathset/fastdds_eth.xml
 EOF
 )"
     if [ "$DRY_RUN" = 1 ]; then

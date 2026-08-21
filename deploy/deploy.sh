@@ -12,11 +12,13 @@
 #   ./deploy/deploy.sh --net        # tylko podnieś NAT i znajdź płytkę
 #   ./deploy/deploy.sh --status     # co jest na płytce
 #   ./deploy/deploy.sh --run        # odpal stack (argumenty launcha w LAUNCH_ARGS)
+#   ./deploy/deploy.sh --sweep      # odpal sweep sferyczny dalmierzem (SWEEP_ARGS)
 #
 # Zmienne:
 #   BATHSET_HOST   - user@adres; domyślnie autowykrywanie po MAC w sieci NAT
 #   NM_CON         - profil NetworkManagera z NAT-em (domyślnie bathset-eth)
 #   LAUNCH_ARGS    - argumenty do real_hardware.launch.py przy --run
+#   SWEEP_ARGS     - argumenty do sweep_laser.launch.py przy --sweep
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +28,13 @@ NM_CON="${NM_CON:-bathset-eth}"
 RPI_USER="${RPI_USER:-ubuntu}"
 REMOTE_WS="${REMOTE_WS:-bathset_ws}"
 RPI_OUI="b8:27:eb"          # pula MAC Raspberry Pi Foundation
-NAT_SUBNET="10.42.0"
+# Podsieć NAT-u NIE jest stała, mimo że przez długi czas wychodziła na 10.42.0.
+# NetworkManager w trybie "shared" nadaje 10.42.X.0/24 i zwiększa X, gdy inny
+# aktywny profil shared już trzyma poprzednią pulę - wystarczy druga karta
+# z własnym udostępnianiem (u nas wojtek-eth na adapterze USB), żeby bathset-eth
+# wylądował na 10.42.1.0/24. Dlatego pulę czytamy z interfejsu, a nie zgadujemy;
+# wartość poniżej to tylko awaryjny fallback.
+NAT_SUBNET_FALLBACK="10.42.0"
 # Domyślne argumenty odzwierciedlają to, co jest FIZYCZNIE podpięte do płytki.
 # To nie jest kosmetyka: controller_manager twardo pada (abort całego procesu),
 # jeśli zadeklarowany w URDF komponent nie osiągnie stanu "active" - a to się
@@ -39,14 +47,23 @@ NAT_SUBNET="10.42.0"
 #   ID 2 = człon 1           -> xm540_joint_z
 LAUNCH_ARGS="${LAUNCH_ARGS:-use_servo:=true use_servo_z:=true servo_id:=1 servo_id_z:=2 use_imu:=true use_echosounder:=false use_gnss:=false use_rviz:=false}"
 
+# Sweep sferyczny dalmierzem: sweep_laser.launch.py sam wymusza use_servo,
+# use_servo_z i use_laser, a IMU/echosondę/GNSS domyślnie wyłącza - do tego
+# eksperymentu potrzebne są tylko serwa i dalmierz na /dev/laser. Tu zostają
+# więc tylko parametry samego skanu.
+# \$HOME jest tu celowo NIEROZWINIĘTE: rozwinie się dopiero na płytce, gdzie
+# katalog domowy to /home/ubuntu, a nie katalog domowy stacji.
+SWEEP_ARGS="${SWEEP_ARGS:-az_min_deg:=-15.0 az_max_deg:=15.0 az_step_deg:=2.0 el_min_deg:=-15.0 el_max_deg:=15.0 el_step_deg:=2.0 output_dir:=\$HOME/scans}"
+
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new)
 
-DO_PROVISION=0 DO_BUILD=1 DO_NET_ONLY=0 DO_STATUS=0 DO_RUN=0
+DO_PROVISION=0 DO_BUILD=1 DO_NET_ONLY=0 DO_STATUS=0 DO_RUN=0 DO_SWEEP=0
 for a in "$@"; do case "$a" in
     --provision) DO_PROVISION=1 ;;
     --net)       DO_NET_ONLY=1; DO_BUILD=0 ;;
     --status)    DO_STATUS=1;   DO_BUILD=0 ;;
     --run)       DO_RUN=1;      DO_BUILD=0 ;;
+    --sweep)     DO_SWEEP=1;    DO_BUILD=0 ;;
     --no-build)  DO_BUILD=0 ;;
     -h|--help)   sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "nieznany argument: $a" >&2; exit 2 ;;
@@ -92,20 +109,59 @@ net_up() {
 # powstanie. Zamiast tego zamiatamy podsieć pojedynczymi pingami (równolegle,
 # całość schodzi w sekundę) i dopiero potem czytamy tablicę sąsiedztwa, gdzie
 # rozpoznajemy płytkę po OUI Raspberry Pi.
+# Odczytuje pule, w których w ogóle może siedzieć płytka. Bez tego skanujemy
+# podsieć, w której jej nie ma - a objaw (płytka pinguje się z siebie, ale
+# stacja mówi "No route to host") wygląda jak awaria sprzętu.
+#
+# Zwracamy LISTĘ, nie jedną pulę, bo płytka nie musi wisieć na profilu NM_CON.
+# Przy przepięciu kabla z karty wbudowanej na adapter USB pulę z płytką trzyma
+# profil o CUDZEJ nazwie (u nas wojtek-eth na tym samym adapterze), a bathset-eth
+# dostaje własną, pustą podsieć - szukanie tylko pod NM_CON kończy się wtedy
+# komunikatem "nie znalazłem płytki", mimo że jest podpięta i odpowiada.
+# Profil NM_CON idzie pierwszy, reszta pul 10.42.x ze stacji za nim.
+detect_nat_subnets() {
+    local dev
+    dev="$(nmcli -t -f NAME,DEVICE connection show --active 2>/dev/null \
+           | awk -F: -v n="$NM_CON" '$1==n{print $2; exit}')"
+    {
+        if [ -n "$dev" ]; then
+            ip -4 -o addr show dev "$dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1
+        fi
+        ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' \
+            | cut -d/ -f1 | grep '^10\.42\.' || true
+    } | sed 's/\.[0-9]*$//' | awk 'NF && !seen[$0]++'
+}
+
 find_rpi() {
     if [ -n "${BATHSET_HOST:-}" ]; then echo "$BATHSET_HOST"; return 0; fi
-    local ip="" try
+    local ip="" try sub i
     for try in 1 2 3; do
-        ip="$(ip -4 neigh show 2>/dev/null | grep -i "$RPI_OUI" | awk '{print $1}' | grep "^${NAT_SUBNET}\." | head -1)"
-        [ -n "$ip" ] && break
-        local i
-        for i in $(seq 2 254); do
-            ping -c1 -W1 "${NAT_SUBNET}.${i}" >/dev/null 2>&1 &
+        for sub in $NAT_SUBNETS; do
+            ip="$(ip -4 neigh show 2>/dev/null | grep -i "$RPI_OUI" | awk '{print $1}' | grep "^${sub}\." | head -1)"
+            if [ -n "$ip" ]; then break; fi
+        done
+        # if/then, nie "[ ... ] && break": pod set -e nieudany test kończy całą
+        # funkcję (a razem z nią podpowłokę $(find_rpi)) zamiast dać jej szansę
+        # na kolejne podejście i na sensowny komunikat błędu.
+        if [ -n "$ip" ]; then break; fi
+        for sub in $NAT_SUBNETS; do
+            for i in $(seq 2 254); do
+                ping -c1 -W1 "${sub}.${i}" >/dev/null 2>&1 &
+            done
         done
         wait
         sleep 1
     done
-    [ -z "$ip" ] && { echo "nie znalazłem płytki w ${NAT_SUBNET}.0/24 (MAC ${RPI_OUI}:*)" >&2; return 1; }
+    if [ -z "$ip" ]; then
+        echo "nie znalazłem płytki w podsieciach: ${NAT_SUBNETS} (MAC ${RPI_OUI}:*)" >&2
+        echo "" >&2
+        echo "Najczęstsza przyczyna: płytka trzyma lease z POPRZEDNIEJ puli NAT-u." >&2
+        echo "systemd-networkd nie porzuca go sam - 'networkctl renew' odnawia stary" >&2
+        echo "adres zamiast prosić o nowy. Wejdź po IPv6 link-local i wymuś DISCOVER:" >&2
+        echo "  ssh 'ubuntu@fe80::ba27:ebff:fe78:9e64%<iface>'" >&2
+        echo "  sudo rm -f /run/systemd/netif/leases/*; sudo systemctl restart systemd-networkd" >&2
+        return 1
+    fi
     echo "${RPI_USER}@${ip}"
 }
 
@@ -113,6 +169,9 @@ rpi_ssh() { local h="$1"; shift; ssh "${SSH_OPTS[@]}" "$h" "$@"; }
 
 # -----------------------------------------------------------------------------
 net_up
+NAT_SUBNETS="$(detect_nat_subnets)"
+if [ -z "$NAT_SUBNETS" ]; then NAT_SUBNETS="$NAT_SUBNET_FALLBACK"; fi
+NAT_SUBNETS="$(echo $NAT_SUBNETS)"      # lista w jednej linii, do pętli po słowach
 HOST="$(find_rpi)"
 say "Płytka: ${HOST}"
 
@@ -138,7 +197,7 @@ if [ "$DO_STATUS" = 1 ]; then
         echo \"--- workspace ---\";  ls ~/${REMOTE_WS}/install/setup.bash 2>/dev/null || echo \"BRAK install/\"
         echo \"--- paczki ---\";     ros2 pkg list 2>/dev/null | grep -E \"hardware_controller|bathset_description|xm540\" || echo \"nie widać\"
         echo \"--- urządzenia ---\"
-        for d in /dev/u2d2 /dev/echosounder /dev/gnss /dev/gnss_aux /dev/serial0; do
+        for d in /dev/u2d2 /dev/echosounder /dev/gnss /dev/gnss_aux /dev/serial0 /dev/laser; do
             [ -e \"\$d\" ] && echo \"  [ok]   \$d\" || echo \"  [brak] \$d\"
         done
         echo \"--- zasoby ---\";     free -h | head -3
@@ -146,16 +205,29 @@ if [ "$DO_STATUS" = 1 ]; then
     exit 0
 fi
 
-# ----------------------------------------------------------------- run
-if [ "$DO_RUN" = 1 ]; then
-    say "Odpalam stack: ${LAUNCH_ARGS}"
+# ----------------------------------------------------------- run / sweep
+if [ "$DO_RUN" = 1 ] || [ "$DO_SWEEP" = 1 ]; then
+    if [ "$DO_SWEEP" = 1 ]; then
+        RUN_LAUNCH="sweep_laser.launch.py"; RUN_ARGS="$SWEEP_ARGS"
+    else
+        RUN_LAUNCH="real_hardware.launch.py"; RUN_ARGS="$LAUNCH_ARGS"
+    fi
+
+    say "Odpalam ${RUN_LAUNCH}: ${RUN_ARGS}"
     # setsid + log na płytce: zerwane SSH nie może ubić stacka, a log przeżywa
     # rozłączenie. Logi idą do ~/, NIE do /tmp - reboot czyści tmpfs.
+    # UWAGA: ten skrypt startuje z powłoki NIELOGOWANEJ (setsid nohup), więc
+    # /etc/profile.d/bathset.sh NIE wykonuje się tutaj. Zmienne środowiskowe
+    # trzeba powtórzyć jawnie - inaczej stack wstaje bez profilu Fast DDS i
+    # stacja go nie widzi, mimo że po zalogowaniu przez SSH wszystko wygląda
+    # poprawnie. To była realna pułapka, nie teoria.
     rpi_ssh "$HOST" "cat > ~/run_stack.sh <<'EOF'
 #!/bin/bash
 source /opt/ros/humble/setup.bash
 source ~/${REMOTE_WS}/install/setup.bash
-ros2 launch hardware_controller real_hardware.launch.py ${LAUNCH_ARGS} > ~/stack.log 2>&1
+export ROS_DOMAIN_ID=\${ROS_DOMAIN_ID:-0}
+[ -f /etc/bathset/fastdds_eth.xml ] && export FASTRTPS_DEFAULT_PROFILES_FILE=/etc/bathset/fastdds_eth.xml
+ros2 launch hardware_controller ${RUN_LAUNCH} ${RUN_ARGS} > ~/stack.log 2>&1
 EOF
 chmod +x ~/run_stack.sh; rm -f ~/stack.log
 setsid nohup ~/run_stack.sh </dev/null >/dev/null 2>&1 &

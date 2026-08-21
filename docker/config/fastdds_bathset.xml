@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Przypięcie Fast DDS do podsieci płytki (10.42.0.0/24).
+
+  Po co: stacja ma dwa interfejsy - enp67s0 z NAT-em do płytki (10.42.0.1) i
+  kartę USB z internetem. Fast DDS domyślnie rozgłasza się przez wszystkie, a
+  gdy trafi na ten "zewnętrzny", uczestnicy się nie znajdują i `ros2 topic list`
+  jest pusty mimo działającego stacku na płytce. Zweryfikowane 2026-08-17: bez
+  tego profilu monitor widzi wyłącznie własne /parameter_events i /rosout.
+
+  UWAGA na strukturę - pierwsza wersja tego pliku miała interfaceWhiteList
+  bezpośrednio pod <rtps> uczestnika i Fast DDS ODRZUCAŁ CAŁY PLIK:
+
+    [XMLPARSER Error] Invalid element found into 'rtpsParticipantAttributesType'.
+    Name: interfaceWhiteList
+
+  Błąd leci na stderr, po czym middleware po cichu wraca do ustawień domyślnych,
+  więc objaw jest identyczny jak przy braku profilu. interfaceWhiteList jest
+  własnością DESKRYPTORA TRANSPORTU, nie uczestnika; uczestnik tylko wskazuje
+  ten transport przez userTransports.
+
+  useBuiltinTransports musi być false, inaczej obok naszego transportu wstaje
+  domyślny UDP bez whitelisty i rozgłaszanie znów wychodzi wszystkimi kartami.
+
+  Adres jest adresem STACJI w tej podsieci, nie płytki.
+  Włącza się przez FASTRTPS_DEFAULT_PROFILES_FILE (patrz docker-compose.monitor.yml).
+-->
+<dds>
+  <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>udp_bathset</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <address>10.42.0.1</address>
+          <!-- Loopback musi tu być, inaczej transport nie zwiąże 127.0.0.1
+               i procesy ROS-a na samej stacji (demon ros2 + CLI) przestaną się
+               nawzajem znajdować - ten sam mechanizm, co po stronie płytki. -->
+          <address>127.0.0.1</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="bathset_link" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>udp_bathset</transport_id>
+        </userTransports>
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <builtin>
+          <!--
+            Discovery UNICASTEM prosto pod adres płytki. Sam whitelist nie
+            wystarcza: multicast między stacją a płytką nie przechodzi w ŻADNĄ
+            stronę (zmierzone 2026-08-17 - `ros2 multicast send/receive`, po 5
+            prób każda strona, zero odebranych). Bez initialPeersList uczestnicy
+            się nie znajdują, mimo poprawnego ROS_DOMAIN_ID i sieci hosta.
+
+            Adres pochodzi z DHCP NAT-u, więc gdy płytka dostanie inny, trzeba
+            go tu poprawić - `./deploy/deploy.sh --net` wypisuje aktualny.
+          -->
+          <initialPeersList>
+            <locator>
+              <udpv4>
+                <address>10.42.0.73</address>
+              </udpv4>
+            </locator>
+            <!-- initialPeersList ZASTĘPUJE domyślną listę peerów, w której jest
+                 multicast 239.255.0.1 - a to po nim znajdują się procesy na
+                 jednej maszynie. Bez tych dwóch wpisów demon ros2 i CLI na
+                 stacji przestają się widzieć nawzajem. -->
+            <locator>
+              <udpv4>
+                <address>239.255.0.1</address>
+              </udpv4>
+            </locator>
+            <locator>
+              <udpv4>
+                <address>127.0.0.1</address>
+              </udpv4>
+            </locator>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+
+  </profiles>
+</dds>

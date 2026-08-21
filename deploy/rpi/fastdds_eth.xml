@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS na płytce: discovery UNICASTEM po kablu do stacji.
+
+  PO CO, skoro ROS 2 domyślnie sam się znajduje: bo nie znajduje. Zmierzone
+  2026-08-17 - `ros2 multicast send/receive` w obie strony między stacją a
+  płytką nie dostarczył ANI JEDNEGO datagramu (5 prób każda strona), więc
+  domyślne discovery po multicaście tu nie działa. Objaw: `ros2 topic list`
+  na stacji pokazuje wyłącznie własne /parameter_events i /rosout, mimo że
+  stack na płytce chodzi i publikuje.
+
+  initialPeersList omija problem całkowicie: uczestnik wysyła zgłoszenie
+  UNICASTEM prosto pod podany adres, bez udziału multicastu. Adres to STACJA
+  w podsieci NAT-u (10.42.0.1) - to ona jest drugą stroną kabla.
+
+  Świadomie BEZ interfaceWhiteList: po wyłączeniu WiFi (netplan-wpa-wlan0
+  zamaskowana, 2026-08-17) płytka ma tylko eth0, więc nie ma czego rozróżniać,
+  a whitelist wymuszałby wpisanie tu adresu płytki - a ten pochodzi z DHCP
+  NAT-u i potrafi się zmienić. Po stronie stacji whitelist JEST potrzebny,
+  bo tam interfejsów jest kilka (patrz docker/config/fastdds_bathset.xml).
+
+  Włączane przez FASTRTPS_DEFAULT_PROFILES_FILE w /etc/profile.d/bathset.sh
+  (deploy/rpi/install.sh, faza 4) oraz w ~/run_stack.sh (deploy/deploy.sh).
+  Jedno i drugie jest konieczne: run_stack.sh startuje z powłoki NIELOGOWANEJ,
+  więc profile.d się w nim nie wykonuje.
+-->
+<dds>
+  <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+
+    <participant profile_name="bathset_board" is_default_profile="true">
+      <rtps>
+        <builtin>
+          <initialPeersList>
+            <!--
+              Stacja - drugi koniec kabla.
+            -->
+            <locator>
+              <udpv4>
+                <address>10.42.0.1</address>
+              </udpv4>
+            </locator>
+            <!--
+              MULTICAST JEST TU OBOWIĄZKOWY dla discovery LOKALNEGO na płytce.
+              initialPeersList NIE dodaje się do domyślnej listy peerów, tylko ją
+              ZASTĘPUJE - a w domyślnej siedzi 239.255.0.1, po którym procesy na
+              jednej maszynie normalnie się znajdują.
+
+              Zaliczone dwa razy na żywo 2026-08-17. Za pierwszym razem lista
+              zawierała tylko adres stacji, za drugim stację i 127.0.0.1 - i oba
+              razy było za mało, bo unicast bez podanego portu sonduje tylko
+              kilka pierwszych identyfikatorów uczestników, a sweep_laser
+              uruchamia ich siedem. Objaw za każdym razem ten sam i mylący:
+              "Could not contact service /controller_manager/list_controllers",
+              żaden kontroler nie wstaje, sprzęt tymczasem konfiguruje się i
+              aktywuje poprawnie w kilkadziesiąt milisekund.
+
+              Multicast działa doskonale W OBRĘBIE płytki - nie przechodzi
+              wyłącznie między płytką a stacją, i tylko po to jest tu unicast.
+            -->
+            <locator>
+              <udpv4>
+                <address>239.255.0.1</address>
+              </udpv4>
+            </locator>
+            <locator>
+              <udpv4>
+                <address>127.0.0.1</address>
+              </udpv4>
+            </locator>
+          </initialPeersList>
+        </builtin>
+      </rtps>
+    </participant>
+
+  </profiles>
+</dds>

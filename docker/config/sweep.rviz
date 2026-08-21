@@ -1,0 +1,91 @@
+# Podglad sweepa dalmierzem ze stacji.
+#
+#   docker compose -f docker/docker-compose.monitor.yml run --rm monitor \
+#       rviz2 -d /workspace/docker/config/sweep.rviz
+#
+# Fixed frame to base_link, bo w nim kolektor sklada chmure (target_frame).
+# Decay Time = 0: kolektor publikuje CALA zakumulowana chmure za kazdym razem,
+# wiec dokladanie starych wiadomosci tylko zdublowaloby punkty.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded: ~
+      Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Name: root
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.5
+      Plane Cell Count: 20
+      Color: 80; 80; 80
+      Reference Frame: base_link
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Axes: true
+      Show Names: true
+      Marker Scale: 0.3
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+        Depth: 5
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+      Alpha: 0.6
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Chmura z dalmierza
+      Enabled: true
+      Topic:
+        Value: /laser_cloud
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Style: Points
+      Size (Pixels): 3
+      Alpha: 1
+      Decay Time: 0
+      Position Transformer: XYZ
+      Color Transformer: AxisColor
+      Axis: Z
+      Autocompute Intensity Bounds: true
+    - Class: rviz_default_plugins/Range
+      Name: Aktualny promien
+      Enabled: true
+      Topic:
+        Value: /laser/range
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+      Color: 255; 100; 0
+      Alpha: 0.4
+  Global Options:
+    Fixed Frame: base_link
+    Background Color: 30; 30; 35
+    Frame Rate: 20
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 6
+      Pitch: 0.45
+      Yaw: 0.8
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 1
+      Target Frame: base_link
+Window Geometry:
+  Height: 900
+  Width: 1500
+  Displays:
+    collapsed: false
