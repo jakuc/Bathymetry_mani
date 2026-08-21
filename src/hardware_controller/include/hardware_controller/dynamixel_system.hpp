@@ -30,6 +30,12 @@ struct DynamixelRegisters
   static constexpr uint16_t ADDR_PRESENT_TEMPERATURE = 146;
   static constexpr uint16_t ADDR_PROFILE_VELOCITY = 112;
   static constexpr uint16_t ADDR_PROFILE_ACCELERATION = 108;
+  // Nastawy pętli położenia. UWAGA: to rejestry RAM, więc każde odłączenie
+  // zasilania przywraca fabryczne 800/0/0 - dlatego zapisujemy je przy każdej
+  // konfiguracji, a nie zakładamy, że przetrwały z poprzedniej sesji.
+  static constexpr uint16_t ADDR_POSITION_D_GAIN = 80;
+  static constexpr uint16_t ADDR_POSITION_I_GAIN = 82;
+  static constexpr uint16_t ADDR_POSITION_P_GAIN = 84;
   static constexpr uint8_t MODE_POSITION = 3;
 };
 
@@ -68,6 +74,7 @@ private:
   int32_t rad_to_raw(double rad, int32_t center_raw) const;
 
   void write1(uint8_t servo_id, uint16_t addr, uint8_t value);
+  void write2(uint8_t servo_id, uint16_t addr, uint16_t value);
   void write4(uint8_t servo_id, uint16_t addr, int32_t value);
   // Odczyty raportują powodzenie przez `ok`. Bez tego nieudana transakcja była
   // nie do odróżnienia od poprawnie odczytanego zera i wchodziła do stanu jointa
@@ -87,6 +94,10 @@ private:
   // być ustawialna z URDF-a. Domyślne 0 zachowuje dotychczasowe zachowanie.
   int profile_velocity_{0};
   int profile_acceleration_{0};
+  // Wartości fabryczne XM540; realne nastawy podaje URDF (patrz xm540.ros2_control.xacro).
+  int position_p_gain_{800};
+  int position_i_gain_{0};
+  int position_d_gain_{0};
   static constexpr double kProtocolVersion = 2.0;
   static constexpr int32_t kEncoderResolution = 4096;
 

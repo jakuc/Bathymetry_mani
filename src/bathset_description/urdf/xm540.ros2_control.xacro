@@ -42,20 +42,89 @@
     konstrukcją. Stąd niezerowe wartości domyślne na realnym sprzęcie.
     Jednostki wg dokumentacji XM540: prędkość 0,229 obr/min na jednostkę
     (30 = 6,9 obr/min), przyspieszenie 214,577 obr/min^2 (10 -> rozpęd ~0,2 s).
+
+    TE JEDNOSTKI OBOWIĄZUJĄ TYLKO PRZY drive_mode = 0 (adres EEPROM 10, bit 2
+    wyzerowany). Z ustawionym bitem 2 serwo przechodzi na PROFIL CZASOWY i te
+    same rejestry znaczą co innego: profile_velocity to CAŁKOWITY CZAS RUCHU
+    w milisekundach, a profile_acceleration to czas rozpędu. Wtedy 30 nie znaczy
+    "6,9 obr/min", tylko "wykonaj ten ruch w 30 ms" - czyli szarpnięcie
+    niezależnie od wielkości kroku, a obniżanie liczby PRZYSPIESZA oś zamiast ją
+    zwolnić. Wtyczka wpisuje obu osiom tę samą wartość i NIE ustawia drive_mode,
+    więc rozjazd między serwami jest niewidoczny w konfiguracji.
+
+    Zastane 2026-08-20: elewacja (ID 1) miała drive_mode = 4 (czasowy), azymut
+    (ID 2) miał 0 (prędkościowy). Elewacja przestawiona na 0, obie osie liczą
+    teraz profil tak samo. drive_mode to EEPROM - przeżywa restart, ale wraca
+    po przywróceniu ustawień fabrycznych albo wymianie serwa. Sprawdzać przy
+    każdym "serwo szarpie, a drugie nie".
   -->
   <xacro:arg name="profile_velocity" default="30"/>
   <xacro:arg name="profile_acceleration" default="10"/>
 
   <!--
-    Zero mechaniczne każdej osi wyrażone w surowej pozycji serwa (0..4095).
-    Po zmontowaniu głowicy zero konstrukcji nie wypada w środku zakresu enkodera
-    (2048), więc bez tego jointy w URDF-ie kłamałyby o rzeczywistym położeniu.
-    Wartości zmierzone 2026-08-07 przy głowicy ustawionej w pozycji zerowej;
-    po każdym rozkręceniu i złożeniu trzeba je odczytać na nowo (skan magistrali
-    pokazuje present_position).
+    Nastawy pętli położenia. Fabryczne to 800 / 0 / 0 i zostawiają UCHYB USTALONY:
+    przy czystym członie P oś staje tam, gdzie moment P równoważy tarcie, więc
+    uchyb jest gwarantowany matematycznie (e ~ tarcie / K_P), a nie jest objawem
+    luzu. Zmierzone 2026-08-17 na krokach 2 st (warunki sweepa):
+
+      P/I/D          elewacja   azymut    prąd elew.  prąd azym.
+      800/0/0          0,31 st   0,75 st     105 mA     301 mA
+      1600/0/0         0,12 st   0,29 st      64 mA     251 mA
+      1600/150/0       0,02 st   0,15 st      63 mA     260 mA
+
+    Stąd 1600/150/0: mieści się w tolerancji sweepa (0,5 st) z zapasem.
+    Przeregulowanie było ZEROWE we wszystkich nastawach, bo prędkość przejazdu
+    ustala profil, a nie człon P - pętla tylko nadąża za ruchomym zadaniem, więc
+    nie ma skoku, który dałoby się przeregulować. Z tego samego powodu podnoszenie
+    P nie przyspiesza ruchu; służy wyłącznie dociąganiu. Prąd przy sztywniejszej
+    nastawie NIE wzrósł, więc typowy koszt (grzanie) też tu nie występuje.
+
+    To rejestry RAM - sterownik zapisuje je przy każdej konfiguracji, bo odłączenie
+    zasilania przywraca fabryczne.
   -->
-  <xacro:arg name="center_raw" default="2670"/>      <!-- ID 1, człon 2 (głowica) -->
-  <xacro:arg name="center_raw_z" default="3353"/>    <!-- ID 2, człon 1 -->
+  <xacro:arg name="position_p_gain" default="1600"/>
+  <xacro:arg name="position_i_gain" default="150"/>
+  <xacro:arg name="position_d_gain" default="0"/>
+
+  <!--
+    Zero mechaniczne każdej osi wyrażone w surowej pozycji serwa (0..4095).
+    To jest DEFINICJA GEOMETRYCZNA, nie odczyt: surowa pozycja serwa, przy której
+    joint ma pokazywać 0 rad. Enkoder XM540 jest absolutny, więc nic tu nie dryfuje
+    - ale przy torque_enable = 0 oś stoi tam, gdzie ją zostawi mechanika albo ręka,
+    więc sam present_position nie rozstrzyga, co jest zerem.
+
+    OBA ZERA PRZEDEFINIOWANE 2026-08-20 (poprzednie: 622 / 3353 z 2026-08-17).
+    Razem z nimi przepisane okna limitów w EEPROM serw - patrz niżej. Zmiana zera
+    bez zmiany okna albo odwrotnie daje sweep jednostronny, więc te dwie rzeczy
+    trzeba trzymać razem.
+
+    ELEWACJA (ID 1) = 1154, czyli pozycja, w której głowica stała. Okno EEPROM
+    przepisane 0..1705 -> 130..2178, czyli symetryczne +/-90 stopni wokół 1154.
+    UWAGA: górna granica weszła 41,6 stopnia powyżej dotychczasowego 1705, które
+    poprzednia wersja tego komentarza opisywała jako granicę kolizji mechanicznych.
+    Poszerzenie jest ŚWIADOMĄ decyzją (potwierdzone przy przebudowanej głowicy),
+    a nie przeoczeniem - ale to znaczy, że powyżej 1705 nie ma już żadnej ochrony
+    zapisanej w serwie i pierwszy przejazd w tamten rejon warto zrobić patrząc.
+
+    AZYMUT (ID 2) = 2048, i to jedyne miejsce, gdzie ta liczba MUSI stać. Position
+    Control Mode (operating_mode 3) adresuje jeden obrót: rejestry limitów przyjmują
+    tylko 0..4095, a okno nie może się zawinąć przez zero. Żądane +/-180 stopni to
+    pełne 4096 ticków, więc mieści się wyłącznie wtedy, gdy zero leży dokładnie
+    w środku enkodera. Oś stała na 3054; zostawienie tam zera dałoby -268 / +91,5
+    stopnia zamiast +/-180. Dlatego oś dojechała na 2048 i dopiero to jest zero.
+    Okno EEPROM 0..4095 = +/-180 stopni, czyli BRAK OCHRONY - w zamian za pełny obrót.
+
+    ODKRYCIE PRZY USTAWIANIU (2026-08-20): pod momentem oś azymutu dojeżdża na
+    2048 co do ticka, ale po zdjęciu momentu wraca na 2063, czyli 15 ticków
+    (1,32 stopnia). To nie jest uchyb regulacji, tylko sprężystość mechaniczna
+    odpychająca oś - najpewniej skręcana wiązka, ta sama, która tłumaczy 180 mA
+    postojowego prądu tej osi bez obciążenia grawitacyjnego. Fabryczne 800/0/0
+    zatrzymują się na 2063; człon I z nastaw niżej (1600/150/0) dociąga do 2048
+    i tam trzyma. Wniosek praktyczny: zero azymutu obowiązuje TYLKO pod momentem,
+    a każdy pomiar robiony przy torque off jest przesunięty o te 1,3 stopnia.
+  -->
+  <xacro:arg name="center_raw" default="1154"/>      <!-- ID 1, człon 2 (głowica), elewacja; okno EEPROM 130..2178 -->
+  <xacro:arg name="center_raw_z" default="2048"/>    <!-- ID 2, człon 1, azymut; okno EEPROM 0..4095 -->
 
   <!--
     Czy druga oś (xm540_joint_z, ID 2) ma być w ogóle deklarowana.
@@ -78,6 +147,9 @@
         <param name="baud_rate">1000000</param>
         <param name="profile_velocity">$(arg profile_velocity)</param>
         <param name="profile_acceleration">$(arg profile_acceleration)</param>
+        <param name="position_p_gain">$(arg position_p_gain)</param>
+        <param name="position_i_gain">$(arg position_i_gain)</param>
+        <param name="position_d_gain">$(arg position_d_gain)</param>
       </hardware>
       <joint name="xm540_joint">
         <param name="servo_id">$(arg servo_id)</param>

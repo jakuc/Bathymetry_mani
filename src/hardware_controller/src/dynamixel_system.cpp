@@ -28,6 +28,9 @@ hardware_interface::CallbackReturn DynamixelSystem::on_init(const hardware_inter
   };
   profile_velocity_ = opt_param("profile_velocity", profile_velocity_);
   profile_acceleration_ = opt_param("profile_acceleration", profile_acceleration_);
+  position_p_gain_ = opt_param("position_p_gain", position_p_gain_);
+  position_i_gain_ = opt_param("position_i_gain", position_i_gain_);
+  position_d_gain_ = opt_param("position_d_gain", position_d_gain_);
 
   joints_.reserve(info_.joints.size());
   for (const auto & joint : info_.joints)
@@ -91,6 +94,20 @@ hardware_interface::CallbackReturn DynamixelSystem::on_configure(const rclcpp_li
     write1(joint.servo_id, DynamixelRegisters::ADDR_OPERATING_MODE, DynamixelRegisters::MODE_POSITION);
     write4(joint.servo_id, DynamixelRegisters::ADDR_PROFILE_VELOCITY, profile_velocity_);
     write4(joint.servo_id, DynamixelRegisters::ADDR_PROFILE_ACCELERATION, profile_acceleration_);
+    // Nastawy pętli położenia zapisujemy przy KAŻDEJ konfiguracji, bo to rejestry
+    // RAM: odłączenie zasilania przywraca fabryczne 800/0/0. Fabryczne nastawy
+    // zostawiają uchyb ustalony 0,31 st na elewacji i 0,75 st na azymucie (pomiar
+    // 2026-08-17) - przy czystym P oś staje tam, gdzie moment członu P równoważy
+    // tarcie, więc uchybu nie da się usunąć inaczej niż większym P i członem I.
+    write2(
+      joint.servo_id, DynamixelRegisters::ADDR_POSITION_P_GAIN,
+      static_cast<uint16_t>(position_p_gain_));
+    write2(
+      joint.servo_id, DynamixelRegisters::ADDR_POSITION_I_GAIN,
+      static_cast<uint16_t>(position_i_gain_));
+    write2(
+      joint.servo_id, DynamixelRegisters::ADDR_POSITION_D_GAIN,
+      static_cast<uint16_t>(position_d_gain_));
   }
 
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -205,6 +222,23 @@ void DynamixelSystem::write1(uint8_t servo_id, uint16_t addr, uint8_t value)
 {
   uint8_t error = 0;
   const int result = packet_handler_->write1ByteTxRx(port_handler_, servo_id, addr, value, &error);
+  if (result != COMM_SUCCESS)
+  {
+    RCLCPP_ERROR(
+      logger_, "Błąd komunikacji z serwem ID=%d: %s", servo_id,
+      packet_handler_->getTxRxResult(result));
+  }
+  else if (error != 0)
+  {
+    RCLCPP_WARN(
+      logger_, "Błąd pakietu serwa ID=%d: %s", servo_id, packet_handler_->getRxPacketError(error));
+  }
+}
+
+void DynamixelSystem::write2(uint8_t servo_id, uint16_t addr, uint16_t value)
+{
+  uint8_t error = 0;
+  const int result = packet_handler_->write2ByteTxRx(port_handler_, servo_id, addr, value, &error);
   if (result != COMM_SUCCESS)
   {
     RCLCPP_ERROR(
