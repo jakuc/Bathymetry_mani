@@ -1,0 +1,13 @@
+[Unit]
+Description=Wybor drogi komunikacji plytki: kabel albo wlasny hotspot
+After=network.target systemd-networkd.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/bathset-netmode
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

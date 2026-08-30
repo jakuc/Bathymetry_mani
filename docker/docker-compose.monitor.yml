@@ -44,7 +44,15 @@ services:
       # jest pusty, bo multicast między stacją a płytką nie przechodzi w żadną
       # stronę (zmierzone 2026-08-17). Profil robi dwie rzeczy - przypina DDS do
       # enp67s0 i ustawia discovery unicastem pod adres płytki.
-      - FASTRTPS_DEFAULT_PROFILES_FILE=/workspace/docker/config/fastdds_bathset.xml
+      #
+      # Domyślnie wariant KABLOWY. Gdy płytka jest w sieci domowej po WiFi,
+      # podmienić na fastdds_bathset_wifi.xml:
+      #   FASTDDS_PROFILE=/workspace/docker/config/fastdds_bathset_wifi.xml \
+      #     docker compose -f docker/docker-compose.monitor.yml run --rm monitor
+      # Po WiFi multicast PRZECHODZI (zmierzone 2026-08-30), więc tamten profil
+      # nie ustawia unicastu - pilnuje tylko, żeby DDS nie wychodził kartą
+      # kablową. Szczegóły w nagłówku tamtego pliku.
+      - FASTRTPS_DEFAULT_PROFILES_FILE=${FASTDDS_PROFILE:-/workspace/docker/config/fastdds_bathset.xml}
 
     volumes:
       - ../src:/workspace/src:ro

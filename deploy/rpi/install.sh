@@ -15,6 +15,8 @@
 #   3 udev       : /dev/u2d2, /dev/echosounder, /dev/gnss,
 #                  /dev/laser (dalmierz na Nano)          (--skip-udev)
 #   3.5 uart     : zwolnienie ttyS0 pod IMU GY-955        (--skip-uart)
+#   3.6 wifi     : hotspot + przelacznik kabel/hotspot,
+#                  power_save off na wlan0                  (--skip-wifi)
 #   4 środowisko : /etc/profile.d/bathset.sh              (--skip-env)
 #   5 zram       : skompresowany swap w RAM               (--skip-zram)
 #
@@ -25,7 +27,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROS_DISTRO="${ROS_DISTRO:-humble}"
 DRY_RUN=0
-SKIP_REPO=0 SKIP_PACKAGES=0 SKIP_UDEV=0 SKIP_UART=0 SKIP_ENV=0 SKIP_ZRAM=0
+SKIP_REPO=0 SKIP_PACKAGES=0 SKIP_UDEV=0 SKIP_UART=0 SKIP_WIFI=0 SKIP_ENV=0 SKIP_ZRAM=0
 
 for a in "$@"; do case "$a" in
     --dry-run)       DRY_RUN=1 ;;
@@ -33,6 +35,7 @@ for a in "$@"; do case "$a" in
     --skip-packages) SKIP_PACKAGES=1 ;;
     --skip-udev)     SKIP_UDEV=1 ;;
     --skip-uart)     SKIP_UART=1 ;;
+    --skip-wifi)     SKIP_WIFI=1 ;;
     --skip-env)      SKIP_ENV=1 ;;
     --skip-zram)     SKIP_ZRAM=1 ;;
     *) echo "nieznany argument: $a" >&2; exit 2 ;;
@@ -55,7 +58,7 @@ ros-${ROS_DISTRO}-diagnostic-msgs
 ros-${ROS_DISTRO}-std-srvs
 ros-${ROS_DISTRO}-tf2-ros
 ros-${ROS_DISTRO}-tf2-geometry-msgs"
-TOOL_PKGS="python3-colcon-common-extensions python3-rosdep build-essential git time dnsmasq-base"
+TOOL_PKGS="python3-colcon-common-extensions python3-rosdep build-essential git time dnsmasq-base iw hostapd"
 
 # --------------------------------------------------------------------- faza 1
 provision_repo() {
@@ -148,6 +151,79 @@ provision_uart() {
     fi
 }
 
+# ------------------------------------------------------------------ faza 3.6
+provision_wifi_powersave() {
+    say "Faza 3.6: hotspot, przelacznik kabel/hotspot, power_save"
+
+    # --- 1. Hotspot -------------------------------------------------------
+    # Plytka wystawia wlasna siec, gdy nie ma kabla. Netplan z backendem
+    # networkd NIE UMIE trybu AP, wiec robi to hostapd, a wlan0 celowo zostaje
+    # poza netplanem; adres i serwer DHCP daje wlasny plik .network.
+    run "sudo install -m600 ${HERE}/hostapd.conf /etc/hostapd/hostapd.conf"
+    if [ -n "${BATHSET_AP_PASS:-}" ]; then
+        run "sudo sed -i 's/^wpa_passphrase=.*/wpa_passphrase=${BATHSET_AP_PASS}/' /etc/hostapd/hostapd.conf"
+        info "haslo hotspotu wziete z BATHSET_AP_PASS"
+    fi
+    run "sudo install -m644 ${HERE}/20-wlan0-ap.network /etc/systemd/network/20-wlan0-ap.network"
+
+    # cloud-init regenerowalby 50-cloud-init.yaml z wlan0 jako KLIENTEM domowego
+    # WiFi, a wpa_supplicant odebralby wtedy interfejs hostapd. Objaw: hotspot
+    # startuje i po chwili znika bez bledu.
+    if [ ! -f /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg ]; then
+        run "sudo cp -n /etc/netplan/50-cloud-init.yaml /etc/bathset/50-cloud-init.yaml.klient-wifi 2>/dev/null || true"
+        if [ "$DRY_RUN" != 1 ]; then
+            echo 'network: {config: disabled}' | sudo tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg >/dev/null
+        fi
+        info "cloud-init odciety od konfiguracji sieci (kopia oryginalu w /etc/bathset/)"
+    fi
+    # Klient WiFi bilby sie z hostapd o wlan0.
+    run "sudo systemctl mask --now netplan-wpa-wlan0.service || true"
+
+    # --- 2. Przelacznik kabel/hotspot ------------------------------------
+    # hostapd NIE jest wlaczany samodzielnie - o tym, czy ma chodzic, decyduje
+    # bathset-netmode na podstawie obecnosci kabla. Gdyby hostapd startowal sam,
+    # wstawalby przed ta decyzja i wystawial siec mimo wpietego kabla.
+    run "sudo systemctl unmask hostapd || true"
+    run "sudo systemctl disable hostapd || true"
+    run "sudo install -m755 ${HERE}/bathset-netmode.sh /usr/local/sbin/bathset-netmode"
+    run "sudo install -m644 ${HERE}/bathset-netmode.service /etc/systemd/system/bathset-netmode.service"
+
+    # --- 3. Oszczedzanie energii WiFi ------------------------------------
+    # brcmfmac wstaje z power_save=on i usypia radio miedzy ramkami. Koszt
+    # zmierzony 2026-08-30 (ping ze stacji): on -> avg 34,5 ms, max 168 ms,
+    # mdev 37 ms; off -> avg 12-20 ms, mdev 3,6 ms. To wlasnie ten narzut kazal
+    # w sierpniu 2026 odrzucic WiFi jako droge do plytki (zmierzono wtedy
+    # avg 111,8 ms), nie sprawdziwszy power_save. Ustawienie zyje tylko do
+    # restartu, stad jednostka.
+    local unit=/etc/systemd/system/wifi-powersave-off.service
+    local block
+    block="$(cat <<'EOF'
+[Unit]
+Description=Wylaczenie oszczedzania energii na wlan0 (opoznienia DDS)
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# `|| true` swiadomie: brak wlan0 nie moze wywalac rozruchu.
+ExecStart=/bin/sh -c '/usr/sbin/iw dev wlan0 set power_save off || true'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+)"
+    if [ "$DRY_RUN" = 1 ]; then
+        printf '   [dry-run] zapis %s:\n%s\n' "$unit" "$block"
+        return 0
+    fi
+    printf '%s\n' "$block" | sudo tee "$unit" >/dev/null
+    sudo chmod 644 "$unit"
+    run "sudo systemctl daemon-reload"
+    run "sudo systemctl enable --now wifi-powersave-off.service"
+    run "sudo systemctl enable --now bathset-netmode.service"
+    info "tryb sieci: $(systemctl is-active hostapd >/dev/null && echo 'hotspot' || echo 'kabel')"
+}
+
 # --------------------------------------------------------------------- faza 4
 provision_env() {
     say "Faza 4: środowisko ROS w każdej sesji"
@@ -232,6 +308,7 @@ provision_zram() {
 [ "$SKIP_PACKAGES" = 1 ] || provision_packages
 [ "$SKIP_UDEV"     = 1 ] || provision_udev
 [ "$SKIP_UART"     = 1 ] || provision_uart
+[ "$SKIP_WIFI"     = 1 ] || provision_wifi_powersave
 [ "$SKIP_ENV"      = 1 ] || provision_env
 [ "$SKIP_ZRAM"     = 1 ] || provision_zram
 

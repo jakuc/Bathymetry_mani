@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS na stacji, gdy płytka jest HOTSPOTEM, a stacja jej klientem.
+
+  Topologia: PC laczy sie z siecia `bathset` wystawiana przez plytke (hostapd
+  na wlan0, 192.168.50.1/24, serwer DHCP w systemd-networkd). Kabla nie ma
+  wcale - eth0 plytki jest wylaczony.
+
+  Różnica wobec fastdds_bathset.xml jest jedna, ale zasadnicza: TU NIE MA
+  initialPeersList. Po kablu unicast był konieczny, bo multicast między stacją
+  a płytką nie przechodził w żadną stronę. Po WiFi przechodzi - zmierzone
+  2026-08-30, `ros2 multicast send/receive` w obie strony, datagram odebrany
+  za każdym razem. Stacja i płytka są tu w jednym segmencie L2 (klient i jego
+  własny access point), więc nie ma między nimi urządzenia, które mogłoby
+  multicast zgubić.
+
+  Skoro multicast działa, discovery zostaje domyślne - i cała lista pułapek
+  z initialPeersList (zastępowanie domyślnej listy peerów, znikający localhost,
+  sondowanie tylko kilku pierwszych uczestników) po prostu nie występuje.
+
+  interfaceWhiteList ZOSTAJE, i to jest jedyny powód istnienia tego pliku:
+  stacja ma nadal enp67s0 z pulą NAT-u 10.42.0.1 obok karty WiFi. Bez whitelisty
+  Fast DDS rozgłasza się obiema, część locatorów wskazuje na podsieć, w której
+  płytki już nie ma, i discovery potrafi utknąć na nieosiągalnym adresie.
+
+  ADRES JEST ADRESEM STACJI W SIECI HOTSPOTU i pochodzi z serwera DHCP płytki
+  (pula od 192.168.50.10). Gdy się zmieni, trzeba go tu poprawić - pokaże go
+  `ip -brief addr show wlp0s20f3`.
+
+  Włączenie: ustawić FASTDDS_PROFILE na ścieżkę tego pliku wewnątrz kontenera
+  (/workspace/docker/config/fastdds_bathset_wifi.xml) przed `docker compose run`.
+-->
+<dds>
+  <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+
+    <transport_descriptors>
+      <transport_descriptor>
+        <transport_id>udp_wifi</transport_id>
+        <type>UDPv4</type>
+        <interfaceWhiteList>
+          <!-- Stacja jako klient hotspotu płytki. -->
+          <address>192.168.50.12</address>
+          <!-- Loopback musi tu być, inaczej transport nie zwiąże 127.0.0.1 i
+               demon ros2 przestanie się widzieć z własnym CLI - ta sama pułapka
+               co w wariancie kablowym. -->
+          <address>127.0.0.1</address>
+        </interfaceWhiteList>
+      </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="bathset_wifi" is_default_profile="true">
+      <rtps>
+        <userTransports>
+          <transport_id>udp_wifi</transport_id>
+        </userTransports>
+        <!-- Bez tego obok naszego transportu wstaje domyślny UDP bez whitelisty
+             i rozgłaszanie znów wychodzi wszystkimi kartami. -->
+        <useBuiltinTransports>false</useBuiltinTransports>
+        <!-- builtin/initialPeersList świadomie POMINIĘTE - patrz komentarz wyżej. -->
+      </rtps>
+    </participant>
+
+  </profiles>
+</dds>

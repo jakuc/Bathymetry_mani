@@ -168,7 +168,16 @@ find_rpi() {
 rpi_ssh() { local h="$1"; shift; ssh "${SSH_OPTS[@]}" "$h" "$@"; }
 
 # -----------------------------------------------------------------------------
-net_up
+# NAT podnosimy TYLKO wtedy, gdy sami mamy znaleźć płytkę. Podany BATHSET_HOST
+# znaczy, że droga do niej już istnieje - a od 2026-08-30 bywa nią hotspot
+# WYSTAWIANY PRZEZ PŁYTKĘ, przy kablu wpiętym gdzie indziej. Bezwarunkowe
+# net_up przełączyłoby wtedy kartę kablową stacji na profil `bathset-eth`
+# i odcięło stację od internetu, zupełnie bez potrzeby.
+if [ -n "${BATHSET_HOST:-}" ]; then
+    say "BATHSET_HOST podany - pomijam podnoszenie NAT-u"
+else
+    net_up
+fi
 NAT_SUBNETS="$(detect_nat_subnets)"
 if [ -z "$NAT_SUBNETS" ]; then NAT_SUBNETS="$NAT_SUBNET_FALLBACK"; fi
 NAT_SUBNETS="$(echo $NAT_SUBNETS)"      # lista w jednej linii, do pętli po słowach

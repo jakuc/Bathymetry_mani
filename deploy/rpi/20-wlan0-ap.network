@@ -1,0 +1,27 @@
+# wlan0 jako punkt dostepowy: staly adres + wbudowany serwer DHCP networkd.
+#
+# Podsiec 192.168.50.0/24 jest wybrana tak, zeby NIE kolidowala ani z siecia
+# domowa (192.168.1.0/24), ani z pulami NAT-u ze stacji (10.42.x.0/24). Kolizja
+# podsieci daje objaw "No route to host", ktory wyglada jak zawieszona plytka.
+#
+# Serwer DHCP siedzi w networkd - dnsmasq nie jest potrzebny.
+#
+# EmitRouter=no swiadomie: plytka NIE jest brama do internetu. Gdyby rozglaszala
+# sie jako router, PC po podlaczeniu do hotspotu dostalby trase donikad i stracil
+# siec.
+#
+# ConfigureWithoutCarrier=yes, bo adres ma byc na interfejsie zanim hostapd
+# postawi siec - inaczej pierwszy klient nie ma sie do czego podlaczyc.
+[Match]
+Name=wlan0
+
+[Network]
+Address=192.168.50.1/24
+DHCPServer=yes
+ConfigureWithoutCarrier=yes
+
+[DHCPServer]
+PoolOffset=10
+PoolSize=30
+EmitDNS=no
+EmitRouter=no
