@@ -1,0 +1,85 @@
+# Podgląd narastającej chmury ze sweepu - /laser_cloud z płytki.
+#
+# Reliability Policy = Best Effort ŚWIADOMIE. Chmura jest KUMULATYWNA: każda
+# kolejna wiadomość zawiera wszystko, co poprzednia, plus nowe punkty. Zgubiona
+# ramka nie traci więc żadnej informacji, a wymuszanie transmisji niezawodnej
+# przy 60 kB co 200 ms po WiFi robi retransmisje i obciąża Pi 3B bez zysku.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /LaserCloud1
+      Splitter Ratio: 0.5
+    Tree Height: 600
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Name: root
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.5
+      Plane Cell Count: 20
+      Color: 80; 80; 80
+      Line Style:
+        Line Width: 0.01
+        Value: Lines
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/PointCloud2
+      Name: LaserCloud
+      Enabled: true
+      Topic:
+        Value: /laser_cloud
+        Depth: 5
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+      Style: Points
+      Size (Pixels): 4
+      Alpha: 1
+      Decay Time: 0
+      Position Transformer: XYZ
+      # Kolor = odległość zmierzona przez dalmierz (pole intensity).
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Use rainbow: true
+      Invert Rainbow: false
+      Autocompute Intensity Bounds: true
+      Selectable: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Marker Scale: 0.3
+      Update Interval: 0
+  Global Options:
+    Fixed Frame: base_link
+    Background Color: 25; 25; 30
+    Frame Rate: 20
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 5
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.4
+      Yaw: 2.4
+      Near Clip Distance: 0.01
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400
+  Displays:
+    collapsed: false

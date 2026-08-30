@@ -1,0 +1,713 @@
+      B87A Series
+Laser Rangefinder Module
+      User Manual
+
+
+
+
+       Version: R0
+
+
+
+
+             1
+                            Revision History
+
+Version      Date           by                 Description
+  R0      Sep./11/2018 ly        Initial
+
+
+
+
+                                    1
+                                                                                  Contents
+REVISION HISTORY...................................................................................................................................... 1
+1. INTRODUCTION......................................................................................................................................... 3
+   1.1     FEATURES................................................................................................................................................................................3
+   1.2     QUICK START......................................................................................................................................................................... 3
+2. KEY PARAMETERS....................................................................................................................................4
+3. MECHANICAL DATA..................................................................................................................................5
+4. PIN INFORMATION....................................................................................................................................6
+5. ABSOLUTE MAXIMUM RATINGS.......................................................................................................... 7
+6. OPERATION PROTOCOL..........................................................................................................................7
+   6.1     USART INTERFACE............................................................................................................................................................. 7
+   6.2     CONTROL FLOW CHAR........................................................................................................................................................ 8
+   6.3     COMMAND FRAME.............................................................................................................................................................. 8
+      6.3.1 Control Registers............................................................................................................................ 9
+   6.4     COMMANDS............................................................................................................................................................................9
+      6.4.1 Read Module Latest Status............................................................................................................. 9
+      6.4.2 Read Hardware Version Number.................................................................................................... 9
+      6.4.3 Read Software Version Number.................................................................................................... 10
+      6.4.4 Read Module Serial Number.........................................................................................................10
+      6.4.5 Read Input Voltage.................................................................................................................. 11
+      6.4.6 Read Measure Result.............................................................................................................. 11
+      6.4.7 Set Module Address.......................................................................................................................12
+      6.4.8 Set Module Measure Offset...........................................................................................................12
+      6.4.9 Turn On or Turn Off Laser............................................................................................................12
+      6.4.10   Start 1-shot Auto Distance Measure.........................................................................................13
+      6.4.11   Start 1-shot Slow Distance Measure.........................................................................................13
+      6.4.12   Start 1-shot Fast Distance Measure......................................................................................... 14
+      6.4.13   Start Continuous Auto Distance Measure................................................................................ 14
+      6.4.14   Start Continuous Slow Distance Measure................................................................................ 14
+      6.4.15   Start Continuous Fast Distance Measure.................................................................................15
+      6.4.16   Error Reply from Slave.............................................................................................................15
+      6.4.17   Exit from Continuous Measure.................................................................................................15
+      6.4.18   Start Multi-slaves Measure.......................................................................................................15
+   6.5     MEASURE MODES..............................................................................................................................................................17
+   6.6     STATUS CODES.................................................................................................................................................................... 18
+7. DEMONSTRATION................................................................................................................................... 19
+   7.1     WIRING TO USB2TTL CONVERTER............................................................................................................................ 19
+   7.2     SERIAL PORT TEST SOFTWARE...................................................................................................................................... 19
+
+
+
+
+                                                                                                2
+1. Introduction
+For decades, JRT has been an expert in the field of laser technology, optics, electronics, and mechanical
+systems that make up a laser rangefinder. We are one of the leading manufacturers in this sector. Our
+products are put to successful use around the world.
+M8xx series laser rangefinder module was developed for fast and precise distance measuring, even in
+difficult measurement conditions, like with poor reflect laser signal level. M8xx extremely small and
+lightweight make it suitable for size and weight limited applications, such as portable devices, drones etc.
+1.1    Features
+Features of the M8xx module include:
+1. Small size:
+          40mm width
+          63.7mm long
+          18mm height
+2. Light Weight:
+          < 18g
+3. Precise Distance Measuring
+           1mm resolution
+4.    Long Measuring Distance
+          100 meters
+1.2    Quick Start
+For quick testing shipped module please jump to section 6 Demonstration, after that reading the rest
+sections for more details.
+
+
+
+
+                                                    3
+  2. Key parameters
+                                  Table 2-1 key parameters
+
+    Accuracy                                    ± 3mm
+    Measuring Unit                              millimeter
+    Measuring Range (without Reflection)        0.03-100m
+    Measuring Time                              0.1~4 seconds
+    Laser Class                                 Class II
+    Laser Type                                  635nm, <1mW
+    Size                                        63.7*40*18mm
+    Weight                                      About 18g
+    Voltage                                     DC 2.5~3.3V
+    Operating Temperature                       0-40 ℃ （32-104 ℉ ）
+    Storage Temperature                         -25~60 ℃     (-13~140 ℉)
+*Accuracy is ± 3mm + 40PPM
+
+
+
+
+                                            4
+3. Mechanical Data
+
+
+
+
+                     Figure 3-1 Mechanical Size
+
+
+
+
+                                5
+4. Pin Information
+
+
+
+
+All these pins list below:
+                                              Table 4-1 Pin List
+
+  Pin         Name             Function       Default                     Description
+   5       nRST              Digital Input    High        Module reset pin, active LOW(optional)
+   7       TXD               Digital Output   High        Module USART Transmit pin, Open-Drain
+   8       RXD               Digital Input    High        Module USART Receive pin, Open-Drain
+   9       VCC/VBAT Power                     Power       Power supply， DC 2.5V~3.3V 300mA+
+   10      PWREN             Digital Input    Low         Module power up enable pin, active HIGH
+   11      GND               Power            Ground      Module power ground
+
+
+Application may need more than one laser range finder module to read out each distance. In multi-slave
+applications, beware to set address for each laser module before it be connected to the network to
+avoid the addressing conflict. After factory stage all modules address was set to 0x00 as default.
+
+
+
+
+                                        Figure 4-1 Multi-Module Wiring
+
+
+
+4.1.1 Self-soldering with module on board pads
+                                                      6
+7
+                                      Figure 4-2 Solder Connector
+
+!!! Figure 4-2 Solder Connector shows NO pull-up resistor for module TXD/RXD, because the
+USB2TTL converter has internal pull-up resistors for TXD/RXD pins. But please keep in mind
+module TXD/RXD pins are OPEN-DRAIN which without internal pull-up resistors.
+
+5. Absolute maximum ratings
+!!!Note: Exceeding one or more of the limiting values may cause module permanent damage!
+                                 Table 5-1 Absolute Max. Ratings
+
+       Operating conditions              Min                Normal         Max         Units
+    Voltages
+    VCC                           -0.3                3.0            5.5           V
+    GND                                               0              0             V
+    TXD                           -0.3                               VCC+0.3       V
+    RXD                           -0.3                               VCC+0.3       V
+    PWREN                         -0.3                VCC            4.0           V
+    Temperature
+    Operating                     0                                  +40           ℃
+    Storage                       -25                                +60           ℃
+
+
+6. Operation Protocol
+6.1     USART Interface
+     Baudrate：Auto Detect
+     Start bits：1 bit
+     Data bits：8 bits
+
+
+
+
+                                                  8
+      Stop bits：1 bit
+      Parity：none
+      Flow control：none
+6.2     Control flow char
+All communication commands are issued by master board, laser rangefinder module play slave role to
+answer master’s request. The Ask & Answer flow though USART is shown as Figure 6-1.
+
+
+
+
+                                                 Figure 6-1 Control Flow
+
+In initial state, Slave module (laser rangefinder) is in power down mode before Master pull up the
+PWREN pin. After PWREN goes high, and if nRST pin. Used please also remember to de-assert the
+nRST ping by pull it up, Slave will take about 100 milliseconds to do self-boot, and then entering auto
+baud rate detect stage.
+Master transfer 1byte fixed data 0x55 to slave for auto baud rate, if success, slave will reply 1-byte data
+to master, which present the slave itself address. In one master and multi-slave communication situation,
+the self-address reply from the slaves may cause USART bus conflict, keep in mind this byte should be
+ignored.
+Communication between master and slave has been established after the successful auto baud rate. Now
+master can send command frame to slave.
+6.3     Command Frame
+Command frame may consist 6 parts as Table 6-1 shows.
+                                               Table 6-1 command structure
+
+      Bytes     0                  1                2          3      4       5       6       7         8
+       Bits    [7:0]         [7]       [6:0]       [7:0]   [7:0]    [7:0]    [7:0]   [7:0]   [7:0]     [7:0]
+    Name      Head       R/W.      Address           Register      Payload count       Payload       Checksum
+      Data 0xAA          0         0x51           0x00     0x20    0x00      0x01    0x00    0x00    0x72
+Table 6-1 shows the 1-shot measure request command from master to slave. In this command frame:
+
+
+                                                           9
+     Request frame always start with fixed head byte 0xAA, this byte can also be 0xEE during error
+      reply frame from slave to master, please refer to section 6.4.16 error reply frame;
+     R/W indicate bit, 0: Master write to Slave, 1: Master read from Slave
+     Slave address is 0x51, address has only 7-bits, so the address is from 0x00 to 0x7F, 0x00 is the
+      default address before master issue module address change command, 0x7F is the broadcast
+      address reserved for one-master to multi-slave network;
+     Slave register is 0x0020 (REG_MEA_MODE, see register list 6.3.1 for more details);
+     Payload data count write to register 0x0020 is 0x0001, this section may not present when R/W = 1,
+      Master read from slave;
+     The single data write to register 0x0020 is 0x0000, this section may not present when R/W = 1,
+      Master read from slave;
+     The frame checksum is 0x72, checksum = address byte + register bytes + payload count bytes + all
+      payload bytes, byte overflow ignored;
+6.3.1 Control Registers
+                                              Table 6-2 Registers
+
+        No.    Register                  Name                                      Function
+          1    0x0000       REG_ERR_CODE                       System status code
+          2    0x0006       REG_BAT_VLTG                       Input voltage
+          3    0x0010       REG_ADDRESS                        Module address
+          4    0x0012       REG_OFFSET                         Module measure result offset
+          5    0x0020       REG_MEA_START                      Initiate measure
+          6    0x0022       REG_MEA_RESULT                     Measure result
+          7    0x01BE       REG_CTRL_LD                        Laser diode control
+
+
+6.4    Commands
+6.4.1 Read Module Latest Status
+                                       Table 6-3 cmd. Read Module Status
+
+                        Bytes        0               1                  2      3            4
+                       Name       Head        RW/Address                Register      Checksum
+                        Data     0xAA               0x80           0x00      0x00       0x80
+     Type: Read command
+     Slave address: 0x00
+     Register address: 0x0000
+     Function: master read out the module’s status after previous command executed;
+     Reply from slave:
+                                 Table 6-4 cmd. Reply Read Module Status
+
+      Bytes       0              1              2          3        4          5        6        7        8
+      Name      Head      RW/Address            Register          Payload count         Payload        Checksum
+       Data    0xAA             0x80          0x00       0x00     0x00       0x01     0xYY      0xZZ   Checksum
+Byte 0xZZ is the status code replied from slave, see status codes Table 6-24 for details.
+
+
+6.4.2 Read Hardware Version Number
+                                                         10
+                                    Table 6-5 cmd. Read HW version
+
+                   Bytes        0              1                  2        3          4
+                   Name        Head      RW/Address               Register      Checksum
+                    Data       0xAA           0x80            0x00     0x0A          0x8A
+   Type: Read command
+   Slave address: 0x00
+   Register address: 0x000A
+   Function: master read out the module’s HW version number;
+   Reply from slave:
+                                Table 6-6 cmd. Reply Read HW version
+
+    Bytes     0            1             2         3          4        5        6             7      8
+    Name Head       RW/Address            Register          Payload count           Payload       Checksum
+    Data 0xAA           0x80           0x00     0x0A        0x00      0x01     0xVV       0xYY      sum
+HW version number is 0xVVYY.
+6.4.3 Read Software Version Number
+                                    Table 6-7 cmd. Read HW version
+
+                   Bytes        0              1                  2        3          4
+                   Name        Head      RW/Address               Register      Checksum
+                    Data       0xAA           0x80            0x00     0x0C          0x8C
+   Type: Read command
+   Slave address: 0x00
+   Register address: 0x000C
+   Function: master read out the module’s SW version number;
+   Reply from slave:
+                                Table 6-8 cmd. Reply Read SW version
+
+    Bytes     0            1             2         3          4        5        6             7      8
+    Name Head       RW/Address            Register          Payload count           Payload       Checksum
+    Data 0xAA           0x80           0x00     0x0C        0x00      0x01     0xVV       0xYY      sum
+SW version number is 0xVVYY.
+
+
+
+6.4.4 Read Module Serial Number
+                                    Table 6-9 cmd. Read Serial version
+
+                   Bytes        0              1                  2        3          4
+                   Name        Head      RW/Address               Register      Checksum
+                    Data       0xAA           0x80            0x00     0x0E          0x8E
+   Type: Read command
+   Slave address: 0x00
+   Register address: 0x000E
+                                                       11
+    Function: master read out the module’s serial number;
+    Reply from slave:
+                                  Table 6-10 cmd. Reply Read Serial Number
+
+     Bytes        0           1              2            3          4        5           6             7             8
+     Name Head         RW/Address            Register              Payload count              Payload           Checksum
+      Data 0xAA             0x80           0x00        0x0E        0x00      0x01        0xSS        0xNN            sum
+HW version number is 0xSSNN.
+
+
+6.4.5 Read Input Voltage
+                                        Table 6-11 cmd. Read HW version
+
+                      Bytes        0                  1                  2        3              4
+                      Name        Head       RW/Address                  Register         Checksum
+                      Data        0xAA               0x80            0x00     0x06             0x86
+    Type: Read command
+    Slave address: 0x00
+    Register address: 0x0006
+    Function: master read out the module’s input voltage in mV with BCD encode;
+    Reply from slave:
+                                   Table 6-12 cmd. Reply Read HW version
+
+     Bytes        0           1              2            3          4        5           6             7             8
+     Name Head         RW/Address            Register              Payload count              Payload           Checksum
+      Data 0xAA             0x80           0x00        0x06        0x00      0x01        0x32         0x19           sum
+Input voltage = 3219mV.
+
+
+6.4.6 Read Measure Result
+                                    Table 6-13 cmd. Read Measure Result
+
+                      Bytes        0                  1                  2        3              4
+                      Name        Head       RW/Address                  Register         Checksum
+                      Data        0xAA               0x80            0x00     0x22             0xA2
+    Type: Read command
+    Slave address: 0x00
+    Register address: 0x0022
+    Function: master read out the distance measure result;
+    Reply from slave:
+                                    Table 6-14 cmd. Reply Measure Result
+
+ Bytes        0         1           2            3            4          5              6:9                 10:11          8
+Name         Head      RW/             Register                Payload                Payload           Payload       Check
+                      Address                                   count                 Distance            SQ           sum
+
+    Data     0xAA      0x00        0x00     0x22          0x00       0x03     0xAABBCCDD                    0x0101    Check
+                                                              12
+                                                                                                      sum
+
+
+6.4.7 Set Module Address
+                                  Table 6-15 cmd. Set Module Address
+
+    Bytes      0            1            2        3          4      5        6             7      8
+    Name Head         RW/Address         Register          Payload count         Payload       Checksum
+     Data 0xAA            0x00         0x00     0x10       0x00    0x01    0x00       0xYY       sum
+
+
+   Type: Write command
+   Slave address: 0x00
+   Register address: 0x0010
+   Function: master set slave’s address, this address will not lost after module power off;
+   Reply from slave:
+                                Table 6-16 cmd. Reply Set Module Address
+
+    Bytes      0            1            2        3          4      5        6             7      8
+    Name Head         RW/Address         Register          Payload count         Payload       Checksum
+     Data 0xAA            0x00         0x00     0x10       0x00    0x01    0x00       0xYY       sum
+Slave address set to 0xYY (!!!Beware: address only take bit[6:0], other bits will be ignored).
+！！！Note: Do not set slave address to broadcast address 0x7F, this address is reserved for one master to
+multi-slave network which needs all slave to measure distance at the same time, and no slave reply
+measure result until master ask one of them to.
+
+
+6.4.8 Set Module Measure Offset
+
+    Bytes      0            1            2        3          4      5        6             7      8
+    Name Head         RW/Address         Register          Payload count         Payload       Checksum
+     Data 0xAA            0x00         0x00     0x12       0x00    0x01    0xZZ       0xYY       sum
+
+
+   Type: Write command
+   Slave address: 0x00
+   Register address: 0x0012
+   Function: master set slave’s measure offset. For example, if the offset 0xZZYY = 0x7B(+123) , it
+    means the final output of measure result will PLUS 123 millimeters , if the offset 0xZZYY =
+    0xFF85(-123), it means the final output of measure result will MINUS 123 millimeters.
+   Reply from slave:
+                                Table 6-17 cmd. Reply Set Module Address
+
+    Bytes      0            1            2        3          4      5        6             7      8
+    Name Head         RW/Address         Register          Payload count         Payload       Checksum
+     Data 0xAA            0x00         0x00     0x12       0x00    0x01    0xZZ       0xYY       sum
+
+
+6.4.9 Turn On or Turn Off Laser
+
+
+                                                      13
+                                         Table 6-18 cmd. Turn on/off Laser
+
+     Bytes        0           1               2        3          4        5         6             7             8
+     Name Head         RW/Address             Register          Payload count            Payload           Checksum
+      Data 0xAA             0x00            0x01      0xBE      0x00      0x01      0x00      0xZZ         Checksum
+
+
+    Type: Write command
+    Slave address: 0x00
+    Register address: 0x01BE
+    Function: turn on or turn off laser beam, if 0xZZ = 0x01 laser on, 0xZZ = 0x00 laser off.
+    Reply from slave:
+                                   Table 6-19 cmd. Reply Turn On/Off Laser
+
+     Bytes        0           1               2        3          4        5         6             7             8
+     Name Head         RW/Address             Register          Payload count            Payload           Checksum
+      Data 0xAA             0x00            0x01      0xBE      0x00      0x01      0x00      0xZZ         Checksum
+
+
+6.4.10     Start 1-shot Auto Distance Measure
+
+     Bytes        0           1               2        3          4        5         6             7             8
+     Name Head         RW/Address             Register          Payload count            Payload           Checksum
+      Data 0xAA             0x00            0x00      0x20      0x00      0x01      0x00      0x00              0x21
+
+
+    Type: Write command
+    Slave address: 0x00
+    Register address: 0x0020
+    Function: Initiate slave to do 1-shot measure in auto mode, for measure modes please refer to
+     section 6.5.
+    Reply from slave:
+                                  Table 6-20 cmd. Reply 1-shot Auto Measure
+
+ Bytes        0         1            2            3        4          5            6:9                 10:11           8
+Name         Head      RW/           Register               Payload              Payload           Payload        Check
+                      Address                                count               Distance            SQ            sum
+
+    Data     0xAA      0x00        0x00       0x22     0x00       0x03     0xAABBCCDD                  0x0101     Check
+                                                                                                                   sum
+
+
+    Type: Reply from slave
+    Slave address: 0x00
+    Register address: 0x0022
+    Function: Reply measure result to master, measure result = 0xAABBCCDD millimeters (frame
+     byte6 = 0xAA, byte7 = 0xBB, byte8 = 0xCC, byte9 = 0xDD) and signal quality = 0x101， less
+     signal quality number stands for stronger laser signal and more reliable distance result.
+
+
+6.4.11     Start 1-shot Slow Distance Measure
+
+
+                                                           14
+    Bytes      0            1            2       3          4      5       6             7      8
+    Name Head        RW/Address          Register         Payload count        Payload       Checksum
+    Data 0xAA             0x00         0x00    0x20       0x00    0x01    0x00      0x01       0x22
+
+
+   Type: Write command
+   Slave address: 0x00
+   Register address: 0x0020
+   Function: Initiate slave to do 1-shot measure in slow mode.
+   Reply from slave: same as 1-shot auto mode.
+
+
+6.4.12   Start 1-shot Fast Distance Measure
+
+    Bytes      0            1            2       3          4      5       6             7      8
+    Name Head        RW/Address          Register         Payload count        Payload       Checksum
+    Data 0xAA             0x00         0x00    0x20       0x00    0x01    0x00      0x02       0x23
+
+
+   Type: Write command
+   Slave address: 0x00
+   Register address: 0x0020
+   Function: Initiate slave to do 1-shot measure in fast mode.
+   Reply from slave: same as 1-shot auto mode.
+
+
+6.4.13   Start Continuous Auto Distance Measure
+
+    Bytes      0            1            2       3          4      5       6             7      8
+    Name Head        RW/Address          Register         Payload count        Payload       Checksum
+    Data 0xAA             0x00         0x00    0x20       0x00    0x01    0x00      0x04       0x25
+
+
+   Type: Write command
+   Slave address: 0x00
+   Register address: 0x0020
+   Function: Initiate slave to do continuous measure in auto mode.
+   Reply from slave: same as 1-shot auto mode.
+
+
+
+
+6.4.14   Start Continuous Slow Distance Measure
+
+    Bytes      0            1            2       3          4      5       6             7      8
+    Name Head        RW/Address          Register         Payload count        Payload       Checksum
+    Data 0xAA             0x00         0x00    0x20       0x00    0x01    0x00      0x05       0x26
+
+
+   Type: Write command
+   Slave address: 0x00
+   Register address: 0x0020
+                                                     15
+    Function: Initiate slave to do continuous measure in slow mode.
+    Reply from slave: same as 1-shot auto mode.
+
+
+6.4.15    Start Continuous Fast Distance Measure
+
+    Bytes       0            1            2        3          4      5        6             7       8
+    Name Head          RW/Address          Register         Payload count         Payload       Checksum
+     Data 0xAA             0x00         0x00     0x20       0x00    0x01    0x00       0x06        0x27
+
+
+    Type: Write command
+    Slave address: 0x00
+    Register address: 0x0020
+    Function: Initiate slave to do continuous measure in fast mode.
+    Reply from slave: same as 1-shot auto mode.
+
+
+6.4.16    Error Reply from Slave
+If any error occurred during measuring stage, laser rangefinder module will reply error report frame:
+                                          Table 6-21 Error Reply
+
+    Bytes       0            1            2        3          4      5        6             7       8
+    Name Head          RW/Address          Register         Payload count         Payload       Checksum
+     Data     0xEE         0x00         0x00     0x00       0x00    0x01    0x00       0x0F        0x10
+
+
+    Type: Reply from slave
+    Slave address: 0x00
+    Register address: 0x0000
+    Function: report error status code to master, the error code = 0x000F, please refer section 6.6 status
+     codes for its meaning.
+
+
+6.4.17    Exit from Continuous Measure
+Master transfer one byte 0x58 (upper case character ‘X’) to stop continuous measure mode immediately.
+
+
+6.4.18    Start Multi-slaves Measure
+Master send out 1-shot measure commands to slave address 0x7F, that will make all online slaves to
+measure distance at the same time ， but none of them will return its measure result to master until
+master ask each one to return the measure result. Before master send out the reading measure result
+command, master should read the slave’s status code to make sure there was no error occurred during
+this slave measuring.
+                                      Table 6-22 Broadcast Measuring
+
+    Bytes       0            1            2        3          4      5        6             7       8
+    Name Head          RW/Address          Register         Payload count         Payload       Checksum
+     Data 0xAA             0x7F         0x00     0x20       0x00    0x01    0x00       0x00       0xA0
+
+
+    Type: Write command
+                                                       16
+   Slave address: 0x00
+   Register address: 0x0020
+   Function: Initiate all slave to do 1-shot measure in auto mode
+   Reply from slave: NO REPLY
+
+After sending this command out, master polling each slave address for their status, if slave replies its
+status code with 0x0000, means no error, then send Read-measure-Result command to read back the
+distance. Measure result for each slave will NOT overwrite until next successful measure command with
+a new distance result.
+
+
+
+
+                                                  17
+6.5    Measure Modes
+There are 2 types of measure mode, 1-shot and continuous.
+ 1-shot gives only 1 measure result for each distance measure request command;
+ Continuous measuring continuous to reply distance result as more as 255 times if master not break
+    the measuring cycles. To break the continuous measuring, master need to send 1 byte 0x58 (upper
+    case character ‘X’ in ASCII) during measuring.
+Each measure mode has 3 working attributes:
+ Auto, module returns Measure Result & Signal Quality(SQ), Less SQ value stands for more
+    reliable distance result, in this mode module adjust reading speed according to the laser reflect level;
+ Slow, distance read for higher accuracy;
+ Fast, distance read for lower accuracy, but higher speed.
+
+
+                                       Table 6-23 Measuring Modes
+
+                     Attribute             Auto                 Slow            Fast
+                  Modes
+                           1-shot 1-shot                 1-shot          1-shot
+                                  Auto                   Slow            Fast
+                     Continuous Continuous               Continuous      Continuous
+                                Auto                     Slow            Fast
+                        Measure     Auto                 Slow            Fast
+                         Speed
+                       Measure      Auto                 High            Low
+                       Accuracy
+
+
+
+
+                                                    18
+6.6   Status Codes
+                                Table 6-24 status codes
+
+          Status                           Description
+          Code
+          0x0000     No error
+          0x0001     Power input too low, power voltage should >= 2.2V
+          0x0002     Internal error, don't care
+          0x0003     Module temperature is too low(< -20℃)
+          0x0004     Module temperature is too high(> +40℃)
+          0x0005     Target out of range
+          0x0006     Invalid measure result
+          0x0007     Background light too strong
+          0x0008     Laser signal too weak
+          0x0009     Laser signal too strong
+          0x000A     Hardware fault 1
+          0x000B     Hardware fault 2
+          0x000C     Hardware fault 3
+          0x000D     Hardware fault 4
+          0x000E     Hardware fault 5
+          0x000F     Laser signal not stable
+          0x0010     Hardware fault 6
+          0x0011     Hardware fault 7
+          0x0081     Invalid Frame
+
+
+
+
+                                          19
+7. Demonstration
+7.1    Wiring to USB2TTL converter
+For test purpose, Pin.PWREN tied to RTS line. When RTS asserted, RTS line goes low, so de-assert
+RTS to power module, module then start to boot.
+
+
+                                            Figure 7-1 Wiring
+
+7.2    Serial Port Test Software
+Before start the command test, we need to:
+1. Plug & Install CH341 USB2TTL converter driver on your computer;
+2. Download & install the trial version serial port test software before start, software download page :
+    http://www.geshe.com/en/support/download;
+3. Start the software and follow the steps:
+
+
+
+After starting the PC soft you have 2 options:
+1. Create a new project;
+2. load configuration file and do some modify according to your serial port number;
+
+     Create New Project from scratch.
+
+
+
+
+                                                   20
+                                   Figure 7-2 Create New Project
+
+   Load Configuration file “GeseDemoConfig.bsp” from test file folder
+
+
+
+
+                                     Figure 7-3 Load Config. File
+
+
+
+
+Serial Port parameters Configuration, select the Port No. after plug the USB2TTL converter according
+to your computer, COM7 on my computer. Baud rate can be any of you want, 9600bps 19200bps,
+115200bps etc.
+Remember to assert RTS box to power off module before start test.
+                                                 21
+If you chose to create new project, you have to add your commands by clicking ICO ADD to add
+commands, after that, Click ICO OPEN to turn serial port on.
+
+
+
+
+First release the PWREN by de-assert RTS box, and wait 100 milliseconds for module boot, then do the
+auto baud rate stage by assert the 1st command Active box, click ICO EXCITE to transmit command
+0x55 to laser rangefinder module, Module reply its address right after the auto baud rate success. Now
+                                                 22
+it’s ready to receive further commands from master.
+
+
+
+
+More commands and reply transfer between the laser rangefinder module and the master.
+
+
+
+
+                                                  23
+

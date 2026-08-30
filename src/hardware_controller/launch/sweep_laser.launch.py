@@ -52,6 +52,8 @@ def generate_launch_description():
         "position_p_gain", "position_i_gain", "position_d_gain",
         "laser_port", "laser_xyz", "laser_rpy",
         "laser_calib_table", "laser_calib_a", "laser_calib_b",
+        "laser_type", "jrt_module_baud", "jrt_measure_mode", "jrt_period_ms",
+        "jrt_min_range", "jrt_max_range", "jrt_timeout_ms", "jrt_recover_after_misses",
     ]
 
     real_hardware = IncludeLaunchDescription(
@@ -78,6 +80,8 @@ def generate_launch_description():
             "el_step_deg":     LaunchConfiguration("el_step_deg"),
             "settle_time":     LaunchConfiguration("settle_time"),
             "dwell_time":      LaunchConfiguration("dwell_time"),
+            "wait_for_measurement": LaunchConfiguration("wait_for_measurement"),
+            "max_wait":        LaunchConfiguration("max_wait"),
             "tolerance_deg":   LaunchConfiguration("tolerance_deg"),
             "return_to_zero":  LaunchConfiguration("return_to_zero"),
         }],
@@ -92,6 +96,10 @@ def generate_launch_description():
             "target_frame": LaunchConfiguration("target_frame"),
             "output_dir":   LaunchConfiguration("output_dir"),
             "file_prefix":  LaunchConfiguration("file_prefix"),
+            # Nazwy kolumn CSV dla dwóch kanałów z /laser/raw. Muszą pasować do
+            # czujnika: JRT daje jakość sygnału i kod statusu, Sharp dawał
+            # surowe ADC i jego rozrzut.
+            "raw_columns":  LaunchConfiguration("raw_columns"),
         }],
     )
 
@@ -120,6 +128,19 @@ def generate_launch_description():
                               default_value="328.77:3.69 336.00:2.93 344.05:2.60 371.40:1.94 437.60:1.34 477.22:1.14 503.03:1.05"),
         DeclareLaunchArgument("laser_calib_a", default_value="134.44"),
         DeclareLaunchArgument("laser_calib_b", default_value="1.1556"),
+        # Który dalmierz siedzi na głowicy: "jrt" (obecny) albo "sharp".
+        # Szczegóły i progi zakresu w laser.xacro.
+        DeclareLaunchArgument("laser_type", default_value="jrt"),
+        DeclareLaunchArgument("jrt_module_baud", default_value="38400"),
+        DeclareLaunchArgument("jrt_measure_mode", default_value="fast"),
+        DeclareLaunchArgument("jrt_period_ms", default_value="0"),
+        DeclareLaunchArgument("jrt_min_range", default_value="0.03"),
+        DeclareLaunchArgument("jrt_max_range", default_value="100.0"),
+        DeclareLaunchArgument("jrt_timeout_ms", default_value="4500",
+                              description="BEZPIECZNIK, nie synchronizacja: pomiar modulu trwa wg instrukcji 0,1-4 s. O tym, czy odczyt powstal przy nieruchomej glowicy, decyduje interfejs shot_start"),
+        DeclareLaunchArgument("jrt_recover_after_misses", default_value="10"),
+        DeclareLaunchArgument("raw_columns", default_value="signal_quality,status_code,shot_start",
+                              description="Nazwy kolumn CSV dla /laser/raw; dla laser_type:=sharp podać 'adc,adc_spread,sample_time'"),
 
         # Domyślna siatka 30x30 stopni co 2 stopnie = 256 punktów, ok. 3,5 min
         # przy settle+dwell = 0,8 s. Świadomie wąska: przy szerokim sweepie
@@ -134,7 +155,11 @@ def generate_launch_description():
         DeclareLaunchArgument("settle_time", default_value="0.4",
                               description="Uspokojenie konstrukcji po dojeździe [s]"),
         DeclareLaunchArgument("dwell_time", default_value="0.4",
-                              description="Zbieranie w punkcie siatki [s]; 0,4 s to ok. 7 ramek"),
+                              description="DODATKOWE zbieranie po pierwszym świeżym pomiarze [s]; 0 = ruszaj od razu"),
+        DeclareLaunchArgument("wait_for_measurement", default_value="true",
+                              description="Czekać na pomiar rozpoczęty po dojeździe zamiast odmierzać dwell zegarem"),
+        DeclareLaunchArgument("max_wait", default_value="5.0",
+                              description="Górna granica czekania na pomiar w punkcie [s]"),
         DeclareLaunchArgument("tolerance_deg", default_value="0.5"),
         DeclareLaunchArgument("return_to_zero", default_value="true"),
 

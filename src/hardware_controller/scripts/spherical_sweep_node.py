@@ -26,7 +26,20 @@ Parametry:
   az_min_deg/az_max_deg/az_step_deg      - siatka azymutu
   el_min_deg/el_max_deg/el_step_deg      - siatka elewacji
   settle_time      (float, 0.4) - ile czekać po dojeździe, zanim zaczniemy zbierać [s]
-  dwell_time       (float, 0.4) - ile zbierać w punkcie siatki [s]
+  dwell_time       (float, 0.4) - ile DODATKOWO zbierać po pierwszym świeżym pomiarze [s]
+  wait_for_measurement (bool, True) - czekać na fakt zamiast na zegar (patrz niżej)
+  max_wait         (float, 5.0) - górna granica czekania na pomiar w punkcie [s]
+
+CZEKANIE NA POMIAR, NIE NA ZEGAR
+Dalmierz JRT mierzy wg instrukcji 0,1-4 s - czas zależy od celu, nie jest stały.
+Odmierzanie stałego dwell_time byłoby więc zgadywaniem w obie strony: na łatwym
+celu marnuje czas, na trudnym gubi punkt. Zamiast tego czekamy, aż wróci pomiar
+ROZPOCZĘTY PO dojeździe, i dopiero wtedy ruszamy głowicę.
+
+Rozstrzyga o tym pole z /laser/raw, w którym wtyczka podaje moment WYSŁANIA
+żądania. Sam moment powrotu odpowiedzi nie wystarcza: strzał mógł się zacząć
+jeszcze przy ruchomej głowicy i wrócić już po zatrzymaniu - trafiłby wtedy do
+chmury pod współrzędnymi pozycji docelowej i rozmazał ją wzdłuż toru ruchu.
   tolerance_deg    (float, 0.5) - próg uznania pozycji za osiągniętą
   arrival_timeout  (float, 5.0) - po tylu sekundach jedziemy dalej mimo braku dojazdu [s]
   serpentine       (bool, True) - co drugi wiersz w odwrotną stronę (krótsza droga)
@@ -40,6 +53,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import JointState
+from geometry_msgs.msg import Vector3Stamped
 from std_msgs.msg import Bool, Float64MultiArray, String
 
 
@@ -77,6 +91,8 @@ class SphericalSweepNode(Node):
 
         self.declare_parameter("settle_time", 0.4)
         self.declare_parameter("dwell_time", 0.4)
+        self.declare_parameter("wait_for_measurement", True)
+        self.declare_parameter("max_wait", 5.0)
         self.declare_parameter("tolerance_deg", 0.5)
         self.declare_parameter("arrival_timeout", 5.0)
         self.declare_parameter("serpentine", True)
@@ -94,6 +110,11 @@ class SphericalSweepNode(Node):
 
         self._settle = self.get_parameter("settle_time").value
         self._dwell = self.get_parameter("dwell_time").value
+        self._wait_meas = self.get_parameter("wait_for_measurement").value
+        self._max_wait = self.get_parameter("max_wait").value
+        # Moment rozpoczęcia ostatniego strzału, prosto z /laser/raw (pole z).
+        self._last_shot_start = 0.0
+        self._n_wait_timeout = 0
         self._tol = math.radians(self.get_parameter("tolerance_deg").value)
         self._timeout = self.get_parameter("arrival_timeout").value
         self._return_to_zero = self.get_parameter("return_to_zero").value
@@ -128,6 +149,7 @@ class SphericalSweepNode(Node):
                 reliability=ReliabilityPolicy.RELIABLE))
 
         self.create_subscription(JointState, "/joint_states", self._cb_joints, 10)
+        self.create_subscription(Vector3Stamped, "/laser/raw", self._cb_raw, 10)
 
         total = len(self._points)
         per_point = self._settle + self._dwell
@@ -136,8 +158,11 @@ class SphericalSweepNode(Node):
             f"elewacja {el[0]:.1f}..{el[-1]:.1f} st ({len(el)} poz.), "
             f"razem {total} punktów")
         self.get_logger().info(
-            f"Szacowany czas: {total * per_point / 60.0:.1f} min "
-            f"(bez czasu dojazdu; {per_point:.2f} s na punkt)")
+            f"Szacowany czas: co najmniej {total * per_point / 60.0:.1f} min "
+            f"(bez dojazdu i bez czekania na pomiar; {per_point:.2f} s na punkt)"
+            if not self._wait_meas else
+            f"Czas zależy od czujnika: {per_point:.2f} s na punkt to tylko settle+dwell, "
+            f"do tego dojazd i czekanie na pomiar (max {self._max_wait:.1f} s/punkt)")
 
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -163,6 +188,31 @@ class SphericalSweepNode(Node):
         # zostawiamy tam, gdzie są - nie wymyślamy im wartości.
         msg.data = [float(by_name.get(j, self._positions.get(j, 0.0))) for j in self._order]
         self._pub_cmd.publish(msg)
+
+    def _cb_raw(self, msg: Vector3Stamped):
+        # z = moment WYSŁANIA żądania pomiaru (patrz nagłówek).
+        self._last_shot_start = msg.vector.z
+
+    def _now(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _wait_fresh(self, t_gate: float) -> bool:
+        """Czeka na pomiar rozpoczęty PO t_gate. False = kazano się zatrzymać."""
+        deadline = self._now() + self._max_wait
+        while self._last_shot_start <= t_gate:
+            if self._now() > deadline:
+                # Cel, którego dalmierz nie umie zmierzyć w rozsądnym czasie -
+                # jedziemy dalej, punkt zostanie bez odczytu. To właściwy wynik:
+                # brak pomiaru jest uczciwszy niż liczba wzięta z przypadku.
+                self._n_wait_timeout += 1
+                self.get_logger().warn(
+                    f"Brak pomiaru w {self._max_wait:.1f} s - jadę dalej "
+                    f"({self._n_wait_timeout} takich punktów)",
+                    throttle_duration_sec=10.0)
+                return True
+            if not self._sleep(0.02):
+                return False
+        return True
 
     def _set_collecting(self, value: bool):
         self._pub_collecting.publish(Bool(data=value))
@@ -216,8 +266,14 @@ class SphericalSweepNode(Node):
             if not self._sleep(self._settle):
                 break
 
+            t_gate = self._now()
             self._set_collecting(True)
-            if not self._sleep(self._dwell):
+
+            if self._wait_meas:
+                # Głowica rusza dopiero, gdy wróci pomiar rozpoczęty po t_gate.
+                if not self._wait_fresh(t_gate):
+                    break
+            if self._dwell > 0.0 and not self._sleep(self._dwell):
                 break
             self._set_collecting(False)
 
@@ -233,7 +289,9 @@ class SphericalSweepNode(Node):
 
         state = "done" if not self._stop.is_set() else "aborted"
         self._pub_state.publish(String(data=state))
-        self.get_logger().info(f"Sweep zakończony ({done}/{len(self._points)} punktów).")
+        self.get_logger().info(
+            f"Sweep zakończony ({done}/{len(self._points)} punktów, "
+            f"{self._n_wait_timeout} bez pomiaru w limicie).")
 
     def stop(self):
         self._stop.set()

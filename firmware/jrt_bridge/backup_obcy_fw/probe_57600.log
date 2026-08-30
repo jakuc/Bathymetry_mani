@@ -1,0 +1,5 @@
+Reading flash memory ...
+Reading | ################################################## | 100% 7.27s
+Writing 32768 bytes to output file flash_backup_57600.hex
+
+Avrdude done.  Thank you.

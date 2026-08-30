@@ -31,7 +31,12 @@ Parametry:
   file_prefix     (str, laser_sweep)
   autosave        (bool, True)     - zapis po otrzymaniu /sweep/state = "done"
 
-W CSV obok metrów ląduje surowe ADC (kolumny "adc" i "adc_spread"). Kolumna "d"
+W CSV obok metrów lądują dwa kanały diagnostyczne z /laser/raw. ICH NAZWY SĄ
+PARAMETREM (raw_columns), bo znaczenie zależy od czujnika: Sharp dawał surowe
+ADC i jego rozrzut, dalmierz JRT daje jakość sygnału i kod statusu. Wpisane na
+sztywno "adc" nazywałoby te drugie fałszywie - a CSV jest tu materiałem do
+analizy offline, więc mylna nazwa kolumny wraca po tygodniach jako zła
+interpretacja. Kolumna "d"
 jest skutkiem kalibracji wybranej w chwili skanowania - z samego ADC da się
 odtworzyć chmurę dla dowolnej innej krzywej bez powtarzania skanu. Parowanie
 idzie po znaczniku czasu, który broadcaster wpisuje identyczny w Range i w raw;
@@ -68,6 +73,8 @@ class CloudCollectorNode(Node):
     def __init__(self):
         super().__init__("cloud_collector_node")
 
+        # Nazwy kolumn dla dwóch kanałów z /laser/raw - patrz nagłówek.
+        self.declare_parameter("raw_columns", "adc,adc_spread,sample_time")
         self.declare_parameter("target_frame", "base_link")
         self.declare_parameter("require_gate", True)
         self.declare_parameter("publish_rate", 5.0)
@@ -82,6 +89,20 @@ class CloudCollectorNode(Node):
         self._pending_max_age = self.get_parameter("pending_max_age").value
         self._file_prefix = self.get_parameter("file_prefix").value
         self._autosave = self.get_parameter("autosave").value
+
+        raw_cols = [c.strip() for c in self.get_parameter("raw_columns").value.split(",")]
+        if len(raw_cols) != 3 or not all(raw_cols):
+            raise ValueError(
+                f"raw_columns musi mieć postać '<nazwa>,<nazwa>,<nazwa>', jest {raw_cols!r}")
+        self._raw_col0, self._raw_col1, self._raw_col2 = raw_cols
+
+        # Moment otwarcia bramki. Pomiar, którego strzał ZACZĄŁ SIĘ przed tą
+        # chwilą, powstawał przy jeszcze ruchomej głowicie - odrzucamy go, bo
+        # trafiłby do chmury pod współrzędnymi pozycji docelowej i rozmazał ją
+        # wzdłuż toru ruchu. Dalmierz JRT mierzy 0,1-4 s, więc taki strzał
+        # spokojnie przeżywa dojazd i wraca już po zatrzymaniu.
+        self._gate_open_at = 0.0
+        self._n_stale = 0
 
         out = self.get_parameter("output_dir").value
         self._output_dir = out or os.environ.get(
@@ -147,11 +168,13 @@ class CloudCollectorNode(Node):
         key = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         # Przy powtórzonej ramce (patrz komentarz w laser_broadcaster.cpp) klucz
         # jest ten sam, a wartości identyczne - nadpisanie niczego nie psuje.
-        self._raw[key] = (msg.vector.x, msg.vector.y)
+        self._raw[key] = (msg.vector.x, msg.vector.y, msg.vector.z)
         while len(self._raw) > self._raw_max:
             self._raw.popitem(last=False)
 
     def _cb_gate(self, msg: Bool):
+        if msg.data and not self._collecting:
+            self._gate_open_at = self.get_clock().now().nanoseconds * 1e-9
         self._collecting = msg.data
 
     def _cb_state(self, msg: String):
@@ -197,6 +220,7 @@ class CloudCollectorNode(Node):
             "pt": pt,
             "d": float(d),
             "stamp_key": msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec,
+            "gate_open": self._gate_open_at,
             "stamp_sec": msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
             "received": walltime.monotonic(),
             "joints": dict(self._joints),
@@ -241,20 +265,32 @@ class CloudCollectorNode(Node):
             ro = tf.transform.rotation
             x, y, z = out.point.x, out.point.y, out.point.z
 
-            adc, adc_spread = self._raw.pop(entry["stamp_key"], (None, None))
-            if adc is None:
+            raw0, raw1, raw2 = self._raw.pop(entry["stamp_key"], (None, None, None))
+
+            # raw2 = moment rozpoczęcia strzału (patrz komentarz przy _gate_open_at).
+            if raw2 is not None and entry["gate_open"] > 0.0 and raw2 <= entry["gate_open"]:
+                self._n_stale += 1
+                self.get_logger().warn(
+                    f"Odrzucono pomiar rozpoczęty {entry['gate_open'] - raw2:.2f} s PRZED "
+                    f"otwarciem bramki - powstawał przy ruchomej głowicy "
+                    f"({self._n_stale} takich)",
+                    throttle_duration_sec=10.0)
+                continue
+
+            if raw0 is None:
                 self._n_no_raw += 1
                 self.get_logger().warn(
-                    f"Brak surowego ADC dla t={entry['stamp_sec']:.4f} - "
-                    f"kolumny adc/adc_spread zostaną puste",
+                    f"Brak danych surowych dla t={entry['stamp_sec']:.4f} - "
+                    f"kolumny {self._raw_col0}/{self._raw_col1} zostaną puste",
                     throttle_duration_sec=5.0)
 
             self._points.append((x, y, z, entry["d"]))
             self._meta.append({
                 "x": x, "y": y, "z": z,
                 "d": entry["d"],
-                "adc": adc,
-                "adc_spread": adc_spread,
+                self._raw_col0: raw0,
+                self._raw_col1: raw1,
+                self._raw_col2: raw2,
                 "stamp": entry["stamp_sec"],
                 "tf_stamp": tf.header.stamp.sec + tf.header.stamp.nanosec * 1e-9,
                 "laser_tx": tr.x, "laser_ty": tr.y, "laser_tz": tr.z,

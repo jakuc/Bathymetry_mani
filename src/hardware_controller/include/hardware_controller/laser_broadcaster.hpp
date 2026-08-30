@@ -36,6 +36,7 @@ namespace hardware_controller
 // kilka liczb. Znaczenie pól (i to jest jedyne miejsce, gdzie jest zapisane):
 //     x = adc          - mediana surowego odczytu ADC
 //     y = adc_spread   - rozrzut (max-min) w oknie medianowym
+//     z = sample_time  - stempel (dla JRT: moment ROZPOCZĘCIA strzału)
 //     z = sample_time  - czas pomiaru w sekundach, ten sam co w stemplu
 class LaserBroadcaster : public controller_interface::ControllerInterface
 {
@@ -62,6 +63,11 @@ private:
   // Osobno dla każdego topiku - patrz komentarz przy publikacji raw w update().
   double last_sample_time_{0.0};
   double last_raw_sample_time_{0.0};
+
+  // Nazwy interfejsów diagnostycznych trafiających na ~/raw (x, y).
+  std::string diag0_{"adc"};
+  std::string diag1_{"adc_spread"};
+  std::string diag2_{"sample_time"};
 
   rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr publisher_;
   std::shared_ptr<realtime_tools::RealtimePublisher<sensor_msgs::msg::Range>> rt_publisher_;

@@ -15,6 +15,10 @@
          base_class_type="hardware_interface::SensorInterface">
     <description>Dalmierz Sharp GP2Y0A710K0F na Arduino Nano — ramki LSR po USB-serial, przeliczenie ADC na metry po stronie hosta.</description>
   </class>
+  <class name="hardware_controller/JrtLaserSensor" type="hardware_controller::JrtLaserSensor"
+         base_class_type="hardware_interface::SensorInterface">
+    <description>Dalmierz laserowy JRT (rodzina B87A) przez mostek na Arduino Nano — pomiar w mm prosto z modułu, bez kalibracji po stronie hosta.</description>
+  </class>
   <class name="hardware_controller/ImuSensor" type="hardware_controller::ImuSensor"
          base_class_type="hardware_interface::SensorInterface">
     <description>IMU GY-955 (BNO055 z własnym MCU) — orientacja, żyroskop i akcelerometr po UART, z automatyczną konfiguracją modułu.</description>

@@ -25,6 +25,7 @@ add_library(hardware_controller SHARED
   src/gnss_broadcaster.cpp
   src/imu_sensor.cpp
   src/laser_sensor.cpp
+  src/jrt_laser_sensor.cpp
   src/laser_broadcaster.cpp
 )
 target_include_directories(hardware_controller PRIVATE

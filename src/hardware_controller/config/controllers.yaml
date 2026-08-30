@@ -55,14 +55,25 @@ laser_broadcaster:
   ros__parameters:
     sensor_name: laser
     frame_id: laser_link
-    # Zakres wiarygodności Sharpa GP2Y0A710K0F. Poniżej 1 m krzywa czujnika się
-    # zawija, powyżej 3 m kończy mu się rozdzielczość (przy 3,2 m jedno zliczenie
-    # ADC to ponad 10 cm) - wtyczka zwraca tam NaN, a nie liczbę. Musi się zgadzać
-    # z min_range/max_range podanymi wtyczce w laser.xacro, bo tu opisuje tylko
-    # to, co ląduje w polach wiadomości.
-    min_range: 1.0
-    max_range: 3.0
-    # Karta katalogowa nie podaje szerokości wiązki; 0.0 jak przy echosondzie.
+    # USTAWIONE POD DALMIERZ JRT (laser_type:=jrt, stan od 2026-08-30).
+    # Wartości muszą się zgadzać z min_range/max_range podanymi wtyczce w
+    # laser.xacro - tu opisują tylko to, co ląduje w polach wiadomości.
+    #
+    # 0,03-100 m pochodzi z instrukcji B87A, która opisuje moduł większy od
+    # naszego, więc to filtr bzdur, a nie specyfikacja. Minimum dla tego
+    # egzemplarza nie zostało zmierzone.
+    #
+    # DLA SHARPA (laser_type:=sharp) wpisać z powrotem 1.0 / 3.0 oraz
+    # diag_interfaces: "adc,adc_spread,sample_time" - tam 1-3 m to granice WIARYGODNOŚCI
+    # krzywej, poza którymi wtyczka zwraca NaN.
+    min_range: 0.03
+    max_range: 100.0
+    # Dwa kanały diagnostyczne trafiające na ~/raw jako x i y.
+    # JRT: jakość sygnału (MNIEJSZA liczba = MOCNIEJSZY sygnał) i kod statusu.
+    # Trzeci kanał to moment ROZPOCZĘCIA strzału - po nim sweep decyduje, kiedy
+    # ruszyć głowicę, a kolektor odrzuca pomiary powstałe jeszcze w ruchu.
+    diag_interfaces: "signal_quality,status_code,shot_start"
+    # Producent nie podaje szerokości wiązki; 0.0 jak przy echosondzie.
     field_of_view: 0.0
     radiation_type: 1  # sensor_msgs/Range::INFRARED
 

@@ -88,6 +88,63 @@
   <xacro:arg name="laser_min_range" default="1.0"/>
   <xacro:arg name="laser_max_range" default="3.0"/>
 
+  <!--
+    KTÓRY DALMIERZ SIEDZI NA GŁOWICY.
+
+    "jrt"   - dalmierz laserowy JRT (rodzina B87A) przez mostek na Nano. Zwraca
+              MILIMETRY prosto z modułu, więc nie ma tu żadnej kalibracji ani
+              tabeli PCHIP - byłaby psuciem fabrycznej. To jest stan faktyczny
+              od 2026-08-30 i dlatego jest domyślny.
+    "sharp" - poprzedni Sharp GP2Y0A710K0F: analogowy, wymaga calib_table.
+              Zostawiony, bo cała kalibracja i wyniki sweepów z sierpnia
+              odnoszą się właśnie do niego.
+
+    Progi zakresu są ROZDZIELNE dla obu czujników, bo nie mają ze sobą nic
+    wspólnego: u Sharpa 1-3 m to granice WIARYGODNOŚCI krzywej (poniżej się
+    zawija, powyżej kończy się rozdzielczość), u JRT to tylko zdroworozsądkowy
+    filtr bzdur.
+  -->
+  <xacro:arg name="laser_type" default="jrt"/>
+
+  <xacro:arg name="jrt_module_baud" default="38400"/>
+  <!--
+    "fast" zamiast "slow" świadomie: zmierzone 2026-08-30 na twardej ścianie
+    z 1,74 m dają 1,92 Hz wobec 0,30 Hz, przy TEJ SAMEJ powtarzalności
+    (odch. std 0,76 mm wobec 1,00 mm). Dla sweepa to różnica między 69 minutami
+    a 7 godzinami na półsferę.
+  -->
+  <xacro:arg name="jrt_measure_mode" default="fast"/>
+  <xacro:arg name="jrt_period_ms" default="0"/>
+  <!--
+    TIMEOUT JEST TYLKO BEZPIECZNIKIEM, nie mechanizmem synchronizacji.
+
+    4500 ms bierze się z instrukcji: czas pomiaru modułu to 0,1-4 s i zależy od
+    celu - na skosie albo przy słabym odbiciu miele wielokrotnie dłużej niż
+    typowe pół sekundy. Krótszy timeout porzucałby pomiary, które jeszcze trwają.
+
+    Za to, czy pomiar powstał przy NIERUCHOMEJ głowicy, odpowiada teraz
+    interfejs `shot_start` (moment wysłania żądania), a nie dobór timeoutu:
+    sweep czeka na strzał rozpoczęty po dojeździe, a kolektor odrzuca resztę.
+    Wcześniejsza reguła "timeout krótszy niż settle_time" była obejściem tego
+    samego problemu przez zgadywanie i już nie obowiązuje.
+  -->
+  <xacro:arg name="jrt_timeout_ms" default="4500"/>
+  <!--
+    Po tylu strzałach z rzędu bez odpowiedzi wtyczka odtwarza łącze. Wysoko,
+    bo pomiar 2026-08-30 pokazał, że serie braków biorą się z TRUDNYCH CELÓW,
+    a nie z zerwanego łącza (mostek pytany o status meldował poprawny baud
+    38400 i PWREN wysoki). Zbyt czułe odtwarzanie kosztuje ~1,7 s za każdym
+    razem i niczego nie naprawia.
+  -->
+  <xacro:arg name="jrt_recover_after_misses" default="10"/>
+  <!--
+    ZAKRES JRT: 0,03-100 m to liczby z instrukcji B87A, a ta opisuje moduł
+    WIĘKSZY od naszego - więc traktujemy je jako filtr bzdur, nie jako
+    specyfikację. Rzeczywistego minimum dla tego egzemplarza NIE ZMIERZONO.
+  -->
+  <xacro:arg name="jrt_min_range" default="0.03"/>
+  <xacro:arg name="jrt_max_range" default="100.0"/>
+
   <xacro:if value="$(arg use_laser)">
 
     <link name="laser_link"/>
@@ -98,26 +155,59 @@
       <origin xyz="$(arg laser_xyz)" rpy="$(arg laser_rpy)"/>
     </joint>
 
-    <ros2_control name="laser" type="sensor">
-      <hardware>
-        <plugin>hardware_controller/LaserSensor</plugin>
-        <param name="device_port">$(arg laser_port)</param>
-        <param name="baud_rate">115200</param>
-        <param name="calib_table">$(arg laser_calib_table)</param>
-        <param name="calib_a">$(arg laser_calib_a)</param>
-        <param name="calib_b">$(arg laser_calib_b)</param>
-        <param name="min_range">$(arg laser_min_range)</param>
-        <param name="max_range">$(arg laser_max_range)</param>
-        <!-- Otwarcie portu resetuje Nano przez DTR; tyle trwa bootloader. -->
-        <param name="settle_ms">2000</param>
-      </hardware>
-      <sensor name="laser">
-        <state_interface name="range"/>
-        <state_interface name="adc"/>
-        <state_interface name="adc_spread"/>
-        <state_interface name="sample_time"/>
-      </sensor>
-    </ros2_control>
+    <xacro:if value="${'$(arg laser_type)' == 'sharp'}">
+      <ros2_control name="laser" type="sensor">
+        <hardware>
+          <plugin>hardware_controller/LaserSensor</plugin>
+          <param name="device_port">$(arg laser_port)</param>
+          <param name="baud_rate">115200</param>
+          <param name="calib_table">$(arg laser_calib_table)</param>
+          <param name="calib_a">$(arg laser_calib_a)</param>
+          <param name="calib_b">$(arg laser_calib_b)</param>
+          <param name="min_range">$(arg laser_min_range)</param>
+          <param name="max_range">$(arg laser_max_range)</param>
+          <!-- Otwarcie portu resetuje Nano przez DTR; tyle trwa bootloader. -->
+          <param name="settle_ms">2000</param>
+        </hardware>
+        <sensor name="laser">
+          <state_interface name="range"/>
+          <state_interface name="adc"/>
+          <state_interface name="adc_spread"/>
+          <state_interface name="sample_time"/>
+        </sensor>
+      </ros2_control>
+    </xacro:if>
+
+    <xacro:if value="${'$(arg laser_type)' == 'jrt'}">
+      <ros2_control name="laser" type="sensor">
+        <hardware>
+          <plugin>hardware_controller/JrtLaserSensor</plugin>
+          <param name="device_port">$(arg laser_port)</param>
+          <!-- 115200 to łącze host-mostek; moduł siedzi za nim na module_baud. -->
+          <param name="usb_baud">115200</param>
+          <param name="module_baud">$(arg jrt_module_baud)</param>
+          <param name="measure_mode">$(arg jrt_measure_mode)</param>
+          <param name="period_ms">$(arg jrt_period_ms)</param>
+          <param name="timeout_ms">$(arg jrt_timeout_ms)</param>
+          <param name="recover_after_misses">$(arg jrt_recover_after_misses)</param>
+          <param name="min_range">$(arg jrt_min_range)</param>
+          <param name="max_range">$(arg jrt_max_range)</param>
+          <!-- Otwarcie portu resetuje Nano przez DTR; tyle trwa bootloader
+               mostka plus rozruch modułu po zwolnieniu nRST. -->
+          <param name="settle_ms">2200</param>
+        </hardware>
+        <sensor name="laser">
+          <state_interface name="range"/>
+          <state_interface name="signal_quality"/>
+          <state_interface name="status_code"/>
+          <state_interface name="sample_time"/>
+          <!-- Moment WYSŁANIA żądania. Po nim sweep i kolektor poznają, czy
+               pomiar powstał już przy nieruchomej głowicy - z samego czasu
+               powrotu się tego nie da, bo strzał trwa 0,1-4 s. -->
+          <state_interface name="shot_start"/>
+        </sensor>
+      </ros2_control>
+    </xacro:if>
 
   </xacro:if>
 
