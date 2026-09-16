@@ -54,6 +54,8 @@ def generate_launch_description():
         "laser_calib_table", "laser_calib_a", "laser_calib_b",
         "laser_type", "jrt_module_baud", "jrt_measure_mode", "jrt_period_ms",
         "jrt_min_range", "jrt_max_range", "jrt_timeout_ms", "jrt_recover_after_misses",
+        "m703a_module_baud", "m703a_measure_mode", "m703a_anchor_offset_ms",
+        "m703a_restart_after_ms", "m703a_clock_window_s",
     ]
 
     real_hardware = IncludeLaunchDescription(
@@ -84,6 +86,10 @@ def generate_launch_description():
             "max_wait":        LaunchConfiguration("max_wait"),
             "tolerance_deg":   LaunchConfiguration("tolerance_deg"),
             "return_to_zero":  LaunchConfiguration("return_to_zero"),
+            "mode":               LaunchConfiguration("mode"),
+            "sweep_speed_deg_s":  LaunchConfiguration("sweep_speed_deg_s"),
+            "travel_speed_deg_s": LaunchConfiguration("travel_speed_deg_s"),
+            "accel_deg_s2":       LaunchConfiguration("accel_deg_s2"),
         }],
     )
 
@@ -100,6 +106,7 @@ def generate_launch_description():
             # czujnika: JRT daje jakość sygnału i kod statusu, Sharp dawał
             # surowe ADC i jego rozrzut.
             "raw_columns":  LaunchConfiguration("raw_columns"),
+            "max_signal_quality": LaunchConfiguration("max_signal_quality"),
         }],
     )
 
@@ -112,7 +119,7 @@ def generate_launch_description():
         DeclareLaunchArgument("servo_id_z", default_value="2"),
         # Zera z 2026-08-20; azymut MUSI być 2048, bo +/-180 st mieści się
         # w trybie position tylko wokół środka enkodera. Patrz xm540.ros2_control.xacro.
-        DeclareLaunchArgument("center_raw", default_value="1154"),
+        DeclareLaunchArgument("center_raw", default_value="1031"),
         DeclareLaunchArgument("center_raw_z", default_value="2048"),
         DeclareLaunchArgument("profile_velocity", default_value="30"),
         DeclareLaunchArgument("profile_acceleration", default_value="10"),
@@ -130,7 +137,13 @@ def generate_launch_description():
         DeclareLaunchArgument("laser_calib_b", default_value="1.1556"),
         # Który dalmierz siedzi na głowicy: "jrt" (obecny) albo "sharp".
         # Szczegóły i progi zakresu w laser.xacro.
-        DeclareLaunchArgument("laser_type", default_value="jrt"),
+        DeclareLaunchArgument("laser_type", default_value="m703a"),
+        DeclareLaunchArgument("m703a_module_baud", default_value="19200"),
+        DeclareLaunchArgument("m703a_measure_mode", default_value="F"),
+        DeclareLaunchArgument("m703a_anchor_offset_ms", default_value="-50.0",
+                              description="Kotwica czasu pomiaru [ms] - zmierzona 2026-09-17 testem rewersyjnym"),
+        DeclareLaunchArgument("m703a_restart_after_ms", default_value="1500"),
+        DeclareLaunchArgument("m703a_clock_window_s", default_value="120.0"),
         DeclareLaunchArgument("jrt_module_baud", default_value="38400"),
         DeclareLaunchArgument("jrt_measure_mode", default_value="fast"),
         DeclareLaunchArgument("jrt_period_ms", default_value="0"),
@@ -163,6 +176,19 @@ def generate_launch_description():
         DeclareLaunchArgument("tolerance_deg", default_value="0.5"),
         DeclareLaunchArgument("return_to_zero", default_value="true"),
 
+        # TRYB CIAGLY - domyslny od 2026-09-16. Wiersz elewacji jedzie bez
+        # zatrzymania, azymut przestawia sie miedzy wierszami. Uzasadnienie
+        # pomiarowe w naglowku spherical_sweep_node.py.
+        DeclareLaunchArgument("mode", default_value="continuous",
+                              description="continuous (przejazd bez postoju) albo step (dojedz-ustoj-zbieraj)"),
+        DeclareLaunchArgument("sweep_speed_deg_s", default_value="24.0",
+                              description="Predkosc zbierajacego przejazdu [st/s]; odstep punktow = predkosc / tempo czujnika (24 st/s przy 8,15 Hz = 2,9 st)"),
+        DeclareLaunchArgument("travel_speed_deg_s", default_value="40.0",
+                              description="Predkosc przejazdow niezbierajacych [st/s]"),
+        DeclareLaunchArgument("accel_deg_s2", default_value="60.0"),
+
+        DeclareLaunchArgument("max_signal_quality", default_value="0.0",
+                              description="Filtr jakosci: punkty z SQ powyzej progu poza chmura i PLY, ale w CSV (valid=0). 0 = wylaczony. U JRT mniej = lepiej"),
         DeclareLaunchArgument("target_frame", default_value="base_link"),
         DeclareLaunchArgument("output_dir", default_value="",
                               description="Puste = $ROS_LOG_DIR albo ~/.ros/log"),

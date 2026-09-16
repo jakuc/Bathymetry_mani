@@ -99,6 +99,11 @@ def _launch_setup(context, *args, **kwargs):
         "laser_calib_a": LaunchConfiguration("laser_calib_a").perform(context),
         "laser_calib_b": LaunchConfiguration("laser_calib_b").perform(context),
         "laser_type": LaunchConfiguration("laser_type").perform(context),
+        "m703a_module_baud": LaunchConfiguration("m703a_module_baud").perform(context),
+        "m703a_measure_mode": LaunchConfiguration("m703a_measure_mode").perform(context),
+        "m703a_anchor_offset_ms": LaunchConfiguration("m703a_anchor_offset_ms").perform(context),
+        "m703a_restart_after_ms": LaunchConfiguration("m703a_restart_after_ms").perform(context),
+        "m703a_clock_window_s": LaunchConfiguration("m703a_clock_window_s").perform(context),
         "jrt_module_baud": LaunchConfiguration("jrt_module_baud").perform(context),
         "jrt_measure_mode": LaunchConfiguration("jrt_measure_mode").perform(context),
         "jrt_period_ms": LaunchConfiguration("jrt_period_ms").perform(context),
@@ -124,7 +129,13 @@ def _launch_setup(context, *args, **kwargs):
     # Trzymanie jej na sztywno w controllers.yaml rozjeżdżałoby się z flagą
     # use_servo_z, więc składamy ją tutaj, z tego samego źródła prawdy.
     joints = ["xm540_joint"] + (["xm540_joint_z"] if use_servo_z else [])
-    merged_params["forward_position_controller"]["ros__parameters"]["joints"] = joints
+    # KAŻDY kontroler dostaje WŁASNĄ KOPIĘ listy. Ten sam obiekt w trzech
+    # miejscach yaml.dump zapisuje jako kotwicę i aliasy (&id001 / *id001),
+    # a parser parametrów rcl ich nie obsługuje: "Will not support aliasing"
+    # i ros2_control_node pada przy starcie (2026-09-17).
+    for name in ("forward_position_controller", "profile_velocity_controller",
+                 "profile_acceleration_controller"):
+        merged_params[name]["ros__parameters"]["joints"] = list(joints)
 
     merged_params_file = tempfile.NamedTemporaryFile(
         mode="w", suffix=".yaml", prefix="hardware_controller_params_", delete=False)
@@ -176,6 +187,8 @@ def _launch_setup(context, *args, **kwargs):
     if use_servo:
         nodes.append(TimerAction(period=2.0, actions=[_spawner("joint_state_broadcaster")]))
         nodes.append(TimerAction(period=2.5, actions=[_spawner("forward_position_controller")]))
+        nodes.append(TimerAction(period=2.7, actions=[_spawner("profile_velocity_controller")]))
+        nodes.append(TimerAction(period=2.9, actions=[_spawner("profile_acceleration_controller")]))
         # Most i manual_node są z założenia JEDNOOSIOWE: most publikuje komendę
         # jednoelementową, bo /servo/goal_position to pojedynczy Float64. Przy
         # dwóch jointach kontroler odrzuca taką komendę (niezgodny rozmiar),
@@ -256,14 +269,24 @@ def generate_launch_description():
                               description="Czy deklarować drugą oś xm540_joint_z (wyłącza most i manual_node)"),
         DeclareLaunchArgument("servo_id_z", default_value="2",
                               description="Adres serwa drugiej osi na magistrali"),
-        DeclareLaunchArgument("center_raw", default_value="1154",
-                              description="Zero xm540_joint (elewacja); okno EEPROM serwa 130..2178 = +/-90 st. Ustawione 2026-08-20."),
+        DeclareLaunchArgument("center_raw", default_value="1031",
+                              description="Zero xm540_joint (elewacja); okno EEPROM serwa 7..2055 = +/-90 st. NOWE serwo elewacji, ustawione 2026-09-16."),
         DeclareLaunchArgument("center_raw_z", default_value="2048",
                               description="Zero xm540_joint_z (azymut). MUSI być 2048: +/-180 st mieści się w trybie position tylko wokół środka enkodera."),
         DeclareLaunchArgument("use_laser", default_value="false",
                               description="Czy deklarować dalmierz na głowicy (wymaga /dev/laser)"),
-        DeclareLaunchArgument("laser_type", default_value="jrt",
-                              description="Który dalmierz: 'jrt' (obecny, mierzy w mm) albo 'sharp' (analogowy, wymaga kalibracji)"),
+        DeclareLaunchArgument("laser_type", default_value="m703a",
+                              description="Który dalmierz: 'm703a' (obecny, tryb ciągły 8,15 Hz ze stemplami z Nano), 'jrt' (LDB1, żądanie-odpowiedź) albo 'sharp' (analogowy, wymaga kalibracji)"),
+        DeclareLaunchArgument("m703a_module_baud", default_value="19200",
+                              description="Baud linii M703A (nominal 19200, inaczej niz 38400 w LDB1)"),
+        DeclareLaunchArgument("m703a_measure_mode", default_value="F",
+                              description="F = fast 8,15 Hz (do skanowania), D = auto 2,5 Hz, M = slow"),
+        DeclareLaunchArgument("m703a_anchor_offset_ms", default_value="-50.0",
+                              description="Przesuniecie chwili pomiaru wzgledem stempla pierwszego bajtu linii [ms]. Zmierzone 2026-09-17 testem rewersyjnym: -50 ms (modul mierzy PRZED wyslaniem linii)"),
+        DeclareLaunchArgument("m703a_restart_after_ms", default_value="1500",
+                              description="Po tylu ms ciszy wtyczka wznawia tryb ciagly"),
+        DeclareLaunchArgument("m703a_clock_window_s", default_value="120.0",
+                              description="Okno estymacji dryfu zegara Nano [s]"),
         DeclareLaunchArgument("jrt_module_baud", default_value="38400",
                               description="Baud MODUŁU JRT za mostkiem (nie mylić z 115200 host-mostek)"),
         DeclareLaunchArgument("jrt_measure_mode", default_value="fast",

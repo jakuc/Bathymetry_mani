@@ -62,5 +62,19 @@ while :; do
         logger -t bathset-netmode "tryb: ${mode} (carrier=$(cat "/sys/class/net/${ETH}/carrier" 2>/dev/null || echo ?))"
     fi
 
+    # W trybie hotspotu PILNUJEMY, zeby hostapd faktycznie dzialal, a nie tylko
+    # zeby raz go uruchomic. Bez tego jeden nieudany start (np. hostapd ruszyl,
+    # zanim brcmfmac wystawil wlan0) zostawial plytke BEZ ZADNEJ DROGI dostepu:
+    # tryb juz byl "ap", wiec petla nigdy nie probowala ponownie. Do 2026-09-17
+    # chronil przed tym przypadkiem 2-minutowy timeout wait-online, ktory
+    # opoznial start tak bardzo, ze radio zawsze zdazylo - po jego skroceniu
+    # (wait-online-bathset.conf) ta ochrona musi byc jawna.
+    if [ "$mode" = ap ] && ! systemctl is-active --quiet hostapd; then
+        if [ -e "/sys/class/net/${WLAN}" ]; then
+            systemctl start hostapd 2>/dev/null || true
+            logger -t bathset-netmode "hostapd nie dzialal - ponowny start"
+        fi
+    fi
+
     sleep "$POLL"
 done

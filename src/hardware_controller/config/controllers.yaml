@@ -8,6 +8,18 @@ controller_manager:
     forward_position_controller:
       type: forward_command_controller/ForwardCommandController
 
+    # PROFIL RUCHU SERW W LOCIE (od 2026-09-17): prędkość [st/s] i przyspieszenie
+    # [st/s^2] trajektorii liczonej przez firmware serwa. Skan ciągły ustawia
+    # tu prędkość wiersza i wysyła do forward_position_controller SAM PUNKT
+    # KOŃCOWY - zamiast strumieniować pozycję co 20 ms, co dawało "klatkowanie".
+    # Kontroler, który jeszcze nic nie dostał, niczego nie zapisuje, więc
+    # obowiązuje profil z URDF-a.
+    profile_velocity_controller:
+      type: forward_command_controller/ForwardCommandController
+
+    profile_acceleration_controller:
+      type: forward_command_controller/ForwardCommandController
+
     range_sensor_broadcaster:
       type: range_sensor_broadcaster/RangeSensorBroadcaster
 
@@ -28,6 +40,20 @@ forward_position_controller:
     joints:
       - xm540_joint
     interface_name: position
+
+# Listy jointów obu kontrolerów profilu nadpisuje launch - tak samo jak
+# forward_position_controller, z tego samego źródła prawdy (flaga use_servo_z).
+profile_velocity_controller:
+  ros__parameters:
+    joints:
+      - xm540_joint
+    interface_name: profile_velocity
+
+profile_acceleration_controller:
+  ros__parameters:
+    joints:
+      - xm540_joint
+    interface_name: profile_acceleration
 
 range_sensor_broadcaster:
   ros__parameters:

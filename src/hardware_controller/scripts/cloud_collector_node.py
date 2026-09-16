@@ -83,12 +83,29 @@ class CloudCollectorNode(Node):
         self.declare_parameter("output_dir", "")
         self.declare_parameter("file_prefix", "laser_sweep")
         self.declare_parameter("autosave", True)
+        # FILTR JAKOŚCI (od 2026-09-17). Punkty z signal_quality POWYŻEJ progu nie
+        # trafiają do chmury w RViz ani do PLY - ale ZOSTAJĄ w CSV z kolumną
+        # `valid`, żeby próg dało się zmienić offline bez powtarzania skanu.
+        # U dalmierzy JRT mniejsza liczba = MOCNIEJSZY sygnał. 0 = filtr wyłączony.
+        #
+        # Świadomie BEZ kryterium odległości (decyzja usera): ma działać w każdej
+        # scenie, nie tylko w pokoju, w którym był strojony.
+        #
+        # Skąd potrzeba: półsfera ciągła 2026-09-17 - punkty odstające od sąsiadów
+        # miały medianę SQ 1562 wobec 415 dla zgodnych (mixed pixel na krawędziach,
+        # ukośne i ciemne powierzchnie, słabe odbicie).
+        self.declare_parameter("max_signal_quality", 0.0)
+        # Ile czekać na kanał diagnostyczny pomiaru, zanim uznamy go za zgubiony [s].
+        self.declare_parameter("raw_wait", 0.5)
 
         self._target_frame = self.get_parameter("target_frame").value
         self._require_gate = self.get_parameter("require_gate").value
         self._pending_max_age = self.get_parameter("pending_max_age").value
         self._file_prefix = self.get_parameter("file_prefix").value
         self._autosave = self.get_parameter("autosave").value
+        self._max_sq = float(self.get_parameter("max_signal_quality").value)
+        self._raw_wait = float(self.get_parameter("raw_wait").value)
+        self._n_low_quality = 0
 
         raw_cols = [c.strip() for c in self.get_parameter("raw_columns").value.split(",")]
         if len(raw_cols) != 3 or not all(raw_cols):
@@ -265,6 +282,13 @@ class CloudCollectorNode(Node):
             ro = tf.transform.rotation
             x, y, z = out.point.x, out.point.y, out.point.z
 
+            # Kanał diagnostyczny może przyjść PÓŹNIEJ niż pomiar: to osobny topic,
+            # a TF bywa gotowy od razu, więc pomiar potrafił zostać przetworzony,
+            # zanim jego raw dotarł - i szedł do chmury bez SQ (3% punktów
+            # 2026-09-17). Bez SQ filtr jakości nie może go ocenić, więc czekamy.
+            if entry["stamp_key"] not in self._raw and age < self._raw_wait:
+                still.append(entry)
+                continue
             raw0, raw1, raw2 = self._raw.pop(entry["stamp_key"], (None, None, None))
 
             # raw2 = moment rozpoczęcia strzału (patrz komentarz przy _gate_open_at).
@@ -284,8 +308,18 @@ class CloudCollectorNode(Node):
                     f"kolumny {self._raw_col0}/{self._raw_col1} zostaną puste",
                     throttle_duration_sec=5.0)
 
-            self._points.append((x, y, z, entry["d"]))
+            # Punkt BEZ oceny jakości przy włączonym filtrze uznajemy za niepewny:
+            # nie wiemy, czy byłby poniżej progu.
+            valid = True
+            if self._max_sq > 0.0:
+                valid = raw0 is not None and math.isfinite(raw0) and raw0 <= self._max_sq
+                if not valid:
+                    self._n_low_quality += 1
+
+            if valid:
+                self._points.append((x, y, z, entry["d"]))
             self._meta.append({
+                "valid": int(valid),
                 "x": x, "y": y, "z": z,
                 "d": entry["d"],
                 self._raw_col0: raw0,
@@ -310,6 +344,7 @@ class CloudCollectorNode(Node):
         self._raw.clear()
         self._n_seen = self._n_gated = self._n_invalid = self._n_no_tf = 0
         self._n_no_raw = 0
+        self._n_low_quality = 0
         self.get_logger().info(f"Bufor wyczyszczony ({n} punktów).")
         return resp
 
@@ -356,7 +391,9 @@ class CloudCollectorNode(Node):
         self.get_logger().info(
             f"Bilans: {self._n_seen} odebranych, {self._n_gated} poza bramką, "
             f"{self._n_invalid} poza zakresem, {self._n_no_tf} bez TF, "
-            f"{self._n_no_raw} bez surowego ADC.")
+            f"{self._n_no_raw} bez surowego ADC, "
+            f"{self._n_low_quality} odrzuconych filtrem jakości (SQ > {self._max_sq:.0f}; "
+            f"zostają w CSV z valid=0).")
 
     # -------------------------------------------------------------- publikacja
 

@@ -2,11 +2,49 @@
 """
 spherical_sweep_node - sweep sferyczny obiema osiami głowicy, na realnym sprzęcie.
 
-Przechodzi siatkę azymut x elewacja metodą "dojedź - ustój - zbieraj", a nie
-ciągłym przelotem. To nie jest ostrożność: dalmierz Sharp jest analogowy i wolny,
-a firmware liczy jeszcze medianę z okna ~50 ms, więc w ruchu każdy punkt
-rozmazuje się po łuku i chmura wychodzi rozmyta w kierunku obrotu. W bezruchu
-to samo uśrednianie tylko zbija szum.
+DWA TRYBY PRACY (parametr `mode`):
+
+  "step"       - "dojedź, ustój, zbieraj": siatka azymut x elewacja, w każdym
+                 węźle postój. Tak powstały wszystkie chmury do 2026-09-05.
+  "continuous" - wiersz elewacji przejeżdżany BEZ ZATRZYMANIA, azymut
+                 przestawiany między wierszami. Domyślny od 2026-09-16.
+
+DLACZEGO TRYB CIĄGŁY W OGÓLE WOLNO WŁĄCZYĆ. Pierwotny sweep stał w każdym
+punkcie nie z ostrożności, tylko dlatego, że Sharp uśredniał okno ~50 ms, a
+dalmierz JRT LDB1 mielił pojedynczy strzał 0,5 s - w ruchu punkt rozmazywał się
+po łuku. Oba założenia upadły w pomiarach:
+
+  * moduł NIE CAŁKUJE po całym oknie (test amplitudy profilu przy 12/24/48/72
+    st/s, 2026-09-05): przy łuku 35 st amplituda spadła o 5%, a nie do 1/3.
+    Te setki milisekund to narzut i obróbka, światło zbierane jest krótko;
+  * test PAROWANY (2026-09-05) dał przy 18,6 st/s tę samą odległość co
+    dojedź-i-ustój: bias -0,9 mm, sigma 16,8 mm - a te 16,8 mm to w większości
+    LUZ mechaniczny (<= 0,5 st), nie ruch.
+
+Zysk jest za to duży: znika settle + dwell + dojazd, czyli ~2 s na punkt.
+Z dalmierzem M703A (8,15 Hz) półsfera co 3 st schodzi z godzin do ~8 minut.
+
+CENĄ JEST CZAS. W bezruchu stempel pomiaru mógł być byle jaki, bo kąt się nie
+zmieniał. W ruchu błąd czasu JEST błędem kąta: przy 24 st/s 10 ms to 0,24 st.
+Dlatego tryb ciągły ma sens wyłącznie z czujnikiem stemplowanym na Nano
+(M703aLaserSensor) i z kotwicą zmierzoną testem rewersyjnym.
+
+KAŻDY RUCH LICZY FIRMWARE SERWA (od 2026-09-17). Węzeł ustawia prędkość
+i przyspieszenie profilu przez /profile_velocity_controller i
+/profile_acceleration_controller, po czym wysyła SAM PUNKT KOŃCOWY - trapez
+prędkości liczy serwo z częstotliwością 1 kHz.
+
+Wcześniej węzeł strumieniował pozycję co 20 ms. Przy włączonym profilu serwo
+planowało wtedy osobny mini-trapez przy KAŻDYM kroku, a głowica "klatkowała"
+(obserwacja usera). Dla rekonstrukcji nic się nie zmienia: kąt pod pomiar i tak
+pochodzi z enkoderów, nie z zadanej trajektorii.
+
+Nadal obowiązuje zasada z 2026-09-05: głowica stoi luźno na małej podstawie,
+więc żaden ruch nie może iść z pełną prędkością serwa - zawsze z jawnym,
+umiarkowanym przyspieszeniem profilu. Rampa firmware'u jest TRAPEZOWA
+(przyspieszenie przeskakuje z 0 na zadane), a nie esowata jak w wersji
+strumieniowanej; gdyby start wiersza szarpał, pierwszym ruchem jest obniżenie
+accel_deg_s2.
 
 Publikuje:
   /forward_position_controller/commands  (Float64MultiArray) - pozycje jointów [rad]
@@ -44,6 +82,18 @@ chmury pod współrzędnymi pozycji docelowej i rozmazał ją wzdłuż toru ruch
   arrival_timeout  (float, 5.0) - po tylu sekundach jedziemy dalej mimo braku dojazdu [s]
   serpentine       (bool, True) - co drugi wiersz w odwrotną stronę (krótsza droga)
   return_to_zero   (bool, True) - czy wrócić do zera po sweepie i przy zamknięciu
+
+Parametry trybu ciągłego:
+  mode             (str, continuous) - "continuous" albo "step"
+  sweep_speed_deg_s (float, 24.0) - prędkość przejazdu wiersza elewacji [st/s].
+                   Razem z tempem czujnika wyznacza GĘSTOŚĆ punktów wzdłuż
+                   wiersza: odstęp = prędkość / tempo. 24 st/s przy 8,15 Hz daje
+                   2,9 st, czyli tyle, ile dawała siatka co 3 st - tylko szybciej.
+  travel_speed_deg_s (float, 40.0) - prędkość przejazdów NIEZBIERAJĄCYCH
+                   (dojazd na start wiersza, zmiana azymutu, parkowanie).
+  accel_deg_s2     (float, 60.0) - przyspieszenie profilu serwa [st/s^2]; rozbieg
+                   do 24 st/s trwa 0,4 s. Kwant rejestru: 21,5 st/s^2.
+  Prędkość profilu ma kwant 1,374 st/s - 24 st/s jedzie naprawdę jako 23,4.
 """
 
 import math
@@ -98,6 +148,11 @@ class SphericalSweepNode(Node):
         self.declare_parameter("serpentine", True)
         self.declare_parameter("return_to_zero", True)
 
+        self.declare_parameter("mode", "continuous")
+        self.declare_parameter("sweep_speed_deg_s", 24.0)
+        self.declare_parameter("travel_speed_deg_s", 40.0)
+        self.declare_parameter("accel_deg_s2", 60.0)
+
         self._az_joint = self.get_parameter("azimuth_joint").value
         self._el_joint = self.get_parameter("elevation_joint").value
         self._order = list(self.get_parameter("joint_order").value)
@@ -119,6 +174,15 @@ class SphericalSweepNode(Node):
         self._timeout = self.get_parameter("arrival_timeout").value
         self._return_to_zero = self.get_parameter("return_to_zero").value
 
+        self._mode = self.get_parameter("mode").value
+        if self._mode not in ("continuous", "step"):
+            raise RuntimeError(f"mode='{self._mode}' - dozwolone: continuous, step")
+        self._sweep_speed = self.get_parameter("sweep_speed_deg_s").value
+        self._travel_speed = self.get_parameter("travel_speed_deg_s").value
+        self._accel = self.get_parameter("accel_deg_s2").value
+        if min(self._sweep_speed, self._travel_speed, self._accel) <= 0.0:
+            raise RuntimeError("prędkości i przyspieszenie muszą być dodatnie")
+
         az = _grid(self.get_parameter("az_min_deg").value,
                    self.get_parameter("az_max_deg").value,
                    self.get_parameter("az_step_deg").value)
@@ -133,9 +197,22 @@ class SphericalSweepNode(Node):
             for e in row:
                 self._points.append((a, e))
 
+        # W trybie ciągłym siatka elewacji nie istnieje - wiersz to PRZEJAZD od
+        # krańca do krańca, a gęstość punktów wzdłuż niego ustala tempo czujnika
+        # razem z prędkością osi. Siatka azymutu zostaje, bo azymut nadal
+        # przestawiamy skokowo.
+        self._rows = []
+        for i, a in enumerate(az):
+            lo, hi = el[0], el[-1]
+            self._rows.append((a, hi, lo) if (serpentine and i % 2) else (a, lo, hi))
+
         self._positions = {}
         self._stop = threading.Event()
 
+        self._pub_pvel = self.create_publisher(
+            Float64MultiArray, "/profile_velocity_controller/commands", 10)
+        self._pub_pacc = self.create_publisher(
+            Float64MultiArray, "/profile_acceleration_controller/commands", 10)
         self._pub_cmd = self.create_publisher(
             Float64MultiArray, "/forward_position_controller/commands", 10)
         self._pub_collecting = self.create_publisher(Bool, "/sweep/collecting", 10)
@@ -150,6 +227,21 @@ class SphericalSweepNode(Node):
 
         self.create_subscription(JointState, "/joint_states", self._cb_joints, 10)
         self.create_subscription(Vector3Stamped, "/laser/raw", self._cb_raw, 10)
+
+        if self._mode == "continuous":
+            span = abs(el[-1] - el[0])
+            row_time = self._profile_time(span, self._sweep_speed, self._accel)
+            self.get_logger().info(
+                f"Sweep CIĄGŁY: azymut {az[0]:.1f}..{az[-1]:.1f} st ({len(az)} wierszy), "
+                f"elewacja {el[0]:.1f}..{el[-1]:.1f} st przejazdem po {row_time:.1f} s "
+                f"przy {self._sweep_speed:.1f} st/s")
+            self.get_logger().info(
+                f"Gęstość wzdłuż wiersza zależy od tempa czujnika: przy 8,15 Hz odstęp "
+                f"{self._sweep_speed / 8.15:.2f} st, czyli ~{span / (self._sweep_speed / 8.15):.0f} "
+                f"punktów na wiersz. Sam przejazd: {len(az) * row_time / 60.0:.1f} min "
+                f"(bez zmian azymutu)")
+            threading.Thread(target=self._run, daemon=True).start()
+            return
 
         total = len(self._points)
         per_point = self._settle + self._dwell
@@ -237,6 +329,98 @@ class SphericalSweepNode(Node):
                 return True
         return True
 
+    # --------------------------------------------------------- trapez prędkości
+
+    @staticmethod
+    def _profile_time(distance_deg, vmax, accel):
+        """Czas trwania trapezu (albo trójkąta, gdy droga za krótka na rozpęd)."""
+        d = abs(distance_deg)
+        if d < 1e-9:
+            return 0.0
+        if d <= vmax * vmax / accel:            # trójkąt: nie zdąży rozpędzić
+            return 2.0 * math.sqrt(d / accel)
+        return 2.0 * vmax / accel + (d - vmax * vmax / accel) / vmax
+
+    def _move(self, az_to, el_to, vmax) -> bool:
+        """Przejazd obu osi do (az_to, el_to) PROFILEM SERWA.
+
+        Prędkość i przyspieszenie rozkładamy na osie proporcjonalnie do drogi,
+        żeby obie skończyły razem - ruch idzie po prostej w przestrzeni jointów.
+        Oś bez drogi dostaje pełną wartość: dla niej to bez znaczenia, a surowe
+        0 znaczyłoby "bez profilu", czyli pełną prędkość.
+        """
+        az_from = math.degrees(self._positions.get(self._az_joint, 0.0))
+        el_from = math.degrees(self._positions.get(self._el_joint, 0.0))
+        d_az, d_el = az_to - az_from, el_to - el_from
+        dist = math.hypot(d_az, d_el)
+        if dist < 1e-3:
+            return True
+
+        def share(d):
+            return abs(d) / dist if abs(d) > 1e-3 else 1.0
+
+        vel = {self._az_joint: vmax * share(d_az), self._el_joint: vmax * share(d_el)}
+        acc = {self._az_joint: self._accel * share(d_az), self._el_joint: self._accel * share(d_el)}
+        for pub, values, fallback in ((self._pub_pvel, vel, vmax), (self._pub_pacc, acc, self._accel)):
+            msg = Float64MultiArray()
+            msg.data = [float(values.get(j, fallback)) for j in self._order]
+            pub.publish(msg)
+        # Profil musi dojść do serwa PRZED celem: serwo planuje trajektorię
+        # w chwili przyjęcia Goal Position. Trzy cykle pętli z zapasem.
+        if not self._sleep(0.08):
+            return False
+        self._send(math.radians(az_to), math.radians(el_to))
+
+        expected = self._profile_time(dist, vmax, self._accel)
+        deadline = self._now() + expected * 1.5 + 2.0
+        while not self._at_target(math.radians(az_to), math.radians(el_to)):
+            if not self._sleep(0.02):
+                return False
+            if self._now() > deadline:
+                self.get_logger().warn(
+                    f"Brak dojazdu do (az={az_to:.1f}, el={el_to:.1f}) w {expected * 1.5 + 2.0:.1f} s "
+                    f"- jadę dalej. Sprawdź limity w EEPROM serwa (Sync Write nie zgłasza "
+                    f"celu spoza okna).", throttle_duration_sec=5.0)
+                return True
+        return True
+
+    # --------------------------------------------------------- sweep ciągły
+
+    def _run_continuous(self):
+        rows = self._rows
+        self.get_logger().info("Sweep ciągły start.")
+        done = 0
+        for az_deg, el_from, el_to in rows:
+            if self._stop.is_set():
+                break
+
+            # Dojazd na początek wiersza jest PRZEJAZDEM NIEZBIERAJĄCYM: bramka
+            # zamknięta, prędkość transportowa.
+            self._set_collecting(False)
+            if not self._move(az_deg, el_from, self._travel_speed):
+                break
+            # Chwila na uspokojenie konstrukcji po zatrzymaniu, zanim ruszy
+            # zbierający przejazd - inaczej pierwsze punkty wiersza łapią drgania.
+            if not self._sleep(self._settle):
+                break
+
+            self._set_collecting(True)
+            ok = self._move(az_deg, el_to, self._sweep_speed)
+            self._set_collecting(False)
+            if not ok:
+                break
+
+            done += 1
+            self.get_logger().info(f"Wiersz {done}/{len(rows)} (az={az_deg:.1f} st) gotowy")
+
+        if self._return_to_zero and not self._stop.is_set():
+            self.get_logger().info("Powrót do zera.")
+            self._move(0.0, 0.0, self._travel_speed)
+
+        state = "done" if not self._stop.is_set() else "aborted"
+        self._pub_state.publish(String(data=state))
+        self.get_logger().info(f"Sweep ciągły zakończony ({done}/{len(rows)} wierszy).")
+
     # ------------------------------------------------------------------- sweep
 
     def _run(self):
@@ -249,6 +433,11 @@ class SphericalSweepNode(Node):
 
         self._set_collecting(False)
         self._pub_state.publish(String(data="running"))
+
+        if self._mode == "continuous":
+            self._run_continuous()
+            return
+
         self.get_logger().info("Sweep start.")
 
         done = 0

@@ -26,6 +26,7 @@ add_library(hardware_controller SHARED
   src/imu_sensor.cpp
   src/laser_sensor.cpp
   src/jrt_laser_sensor.cpp
+  src/m703a_laser_sensor.cpp
   src/laser_broadcaster.cpp
 )
 target_include_directories(hardware_controller PRIVATE
@@ -73,6 +74,11 @@ install(
   PROGRAMS scripts/cloud_collector_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME cloud_collector_node
+)
+install(
+  PROGRAMS scripts/anchor_rev_test.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME anchor_rev_test
 )
 
 ament_export_include_directories(include)

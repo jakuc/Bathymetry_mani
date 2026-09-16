@@ -98,13 +98,16 @@
     bez zmiany okna albo odwrotnie daje sweep jednostronny, więc te dwie rzeczy
     trzeba trzymać razem.
 
-    ELEWACJA (ID 1) = 1154, czyli pozycja, w której głowica stała. Okno EEPROM
-    przepisane 0..1705 -> 130..2178, czyli symetryczne +/-90 stopni wokół 1154.
-    UWAGA: górna granica weszła 41,6 stopnia powyżej dotychczasowego 1705, które
-    poprzednia wersja tego komentarza opisywała jako granicę kolizji mechanicznych.
-    Poszerzenie jest ŚWIADOMĄ decyzją (potwierdzone przy przebudowanej głowicy),
-    a nie przeoczeniem - ale to znaczy, że powyżej 1705 nie ma już żadnej ochrony
-    zapisanej w serwie i pierwszy przejazd w tamten rejon warto zrobić patrząc.
+    ELEWACJA (ID 1) = 1031 od 2026-09-16 (poprzednio 1154). To NOWY EGZEMPLARZ
+    serwa, wymieniony 2026-09-15 (fw 44; zastane ID 12, tryb 4, okno 2711..3958 -
+    przestawione na ID 1, tryb 3). Zero = pozycja, w której głowica stała po
+    złożeniu; okno EEPROM 7..2055, czyli symetryczne +/-90 stopni wokół 1031.
+    UWAGA: dolna granica leży 7 ticków od zawinięcia enkodera przy 0, którego
+    w trybie position przekroczyć się nie da - czyli w dół nie ma już ani stopnia
+    zapasu ponad te +/-90. W górę okno sięga 2055, o 350 ticków (30,8 stopnia)
+    powyżej dawnego 1705, które starszy komentarz opisywał jako granicę kolizji
+    mechanicznych; poszerzenie jest świadome (przebudowana głowica), ale powyżej
+    1705 nie ma ochrony zapisanej w serwie i pierwszy przejazd zrobić patrząc.
 
     AZYMUT (ID 2) = 2048, i to jedyne miejsce, gdzie ta liczba MUSI stać. Position
     Control Mode (operating_mode 3) adresuje jeden obrót: rejestry limitów przyjmują
@@ -123,7 +126,7 @@
     i tam trzyma. Wniosek praktyczny: zero azymutu obowiązuje TYLKO pod momentem,
     a każdy pomiar robiony przy torque off jest przesunięty o te 1,3 stopnia.
   -->
-  <xacro:arg name="center_raw" default="1154"/>      <!-- ID 1, człon 2 (głowica), elewacja; okno EEPROM 130..2178 -->
+  <xacro:arg name="center_raw" default="1031"/>      <!-- ID 1, człon 2 (głowica), elewacja; okno EEPROM 7..2055 -->
   <xacro:arg name="center_raw_z" default="2048"/>    <!-- ID 2, człon 1, azymut; okno EEPROM 0..4095 -->
 
   <!--

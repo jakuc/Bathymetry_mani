@@ -19,6 +19,10 @@
          base_class_type="hardware_interface::SensorInterface">
     <description>Dalmierz laserowy JRT (rodzina B87A) przez mostek na Arduino Nano — pomiar w mm prosto z modułu, bez kalibracji po stronie hosta.</description>
   </class>
+  <class name="hardware_controller/M703aLaserSensor" type="hardware_controller::M703aLaserSensor"
+         base_class_type="hardware_interface::SensorInterface">
+    <description>Dalmierz laserowy JRT M703A przez mostek na Arduino Nano — tryb CIĄGŁY (8,15 Hz) ze stemplami czasu z Nano i estymacją dryfu jego zegara.</description>
+  </class>
   <class name="hardware_controller/ImuSensor" type="hardware_controller::ImuSensor"
          base_class_type="hardware_interface::SensorInterface">
     <description>IMU GY-955 (BNO055 z własnym MCU) — orientacja, żyroskop i akcelerometr po UART, z automatyczną konfiguracją modułu.</description>

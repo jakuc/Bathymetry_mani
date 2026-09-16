@@ -91,6 +91,10 @@
   <!--
     KTÓRY DALMIERZ SIEDZI NA GŁOWICY.
 
+    "m703a" - dalmierz JRT M703A przez mostek na Nano, w trybie CIĄGŁYM ze
+              stemplami czasu z Nano (8,15 Hz). Następca "jrt" od 2026-09-16 i
+              jedyny, którym wolno skanować W RUCHU: pozostałe stemplują pomiar
+              czasem hosta, a przy 24 st/s jitter USB/WiFi to ułamki stopnia.
     "jrt"   - dalmierz laserowy JRT (rodzina B87A) przez mostek na Nano. Zwraca
               MILIMETRY prosto z modułu, więc nie ma tu żadnej kalibracji ani
               tabeli PCHIP - byłaby psuciem fabrycznej. To jest stan faktyczny
@@ -104,7 +108,28 @@
     zawija, powyżej kończy się rozdzielczość), u JRT to tylko zdroworozsądkowy
     filtr bzdur.
   -->
-  <xacro:arg name="laser_type" default="jrt"/>
+  <xacro:arg name="laser_type" default="m703a"/>
+
+  <!--
+    M703A: nominał linii to 19200 (inaczej niż 38400 w LDB1). Tryb "F" (fast)
+    daje 8,15 Hz przy std 0,54 mm - "D" jest trzykrotnie wolniejszy przy tej
+    samej powtarzalności, więc do skanowania nie ma po co.
+
+    m703a_anchor_offset_ms: przesunięcie chwili pomiaru względem stempla
+    pierwszego bajtu linii. ZMIERZONE 2026-09-17 testem rewersyjnym
+    (scripts/anchor_from_rev.py): -49,8 ms i -49,9 ms w dwóch niezależnych
+    przebiegach (ruch krokowy i profil serwa), elewacja +-55 st, 6/12/24 st/s,
+    połówki rozłączne zgodne co do 0,1 st. Niepewność ~+-3 ms (krok szukania).
+    UJEMNE = moduł mierzy PRZED wysłaniem linii (tyle trwa jego obróbka).
+    Bez tej poprawki przy 24 st/s każdy punkt ląduje 1,2 st obok.
+    Przy okazji wyszedł luz osi elewacji ~0,25-0,30 st - kompensowany osobno,
+    NIE tą liczbą.
+  -->
+  <xacro:arg name="m703a_module_baud" default="19200"/>
+  <xacro:arg name="m703a_measure_mode" default="F"/>
+  <xacro:arg name="m703a_anchor_offset_ms" default="-50.0"/>
+  <xacro:arg name="m703a_restart_after_ms" default="1500"/>
+  <xacro:arg name="m703a_clock_window_s" default="120.0"/>
 
   <xacro:arg name="jrt_module_baud" default="38400"/>
   <!--
@@ -174,6 +199,38 @@
           <state_interface name="adc"/>
           <state_interface name="adc_spread"/>
           <state_interface name="sample_time"/>
+        </sensor>
+      </ros2_control>
+    </xacro:if>
+
+    <xacro:if value="${'$(arg laser_type)' == 'm703a'}">
+      <ros2_control name="laser" type="sensor">
+        <hardware>
+          <plugin>hardware_controller/M703aLaserSensor</plugin>
+          <param name="device_port">$(arg laser_port)</param>
+          <!-- 115200 to łącze host-mostek; moduł siedzi za nim na module_baud. -->
+          <param name="usb_baud">115200</param>
+          <param name="module_baud">$(arg m703a_module_baud)</param>
+          <param name="measure_mode">$(arg m703a_measure_mode)</param>
+          <param name="anchor_offset_ms">$(arg m703a_anchor_offset_ms)</param>
+          <param name="restart_after_ms">$(arg m703a_restart_after_ms)</param>
+          <param name="clock_window_s">$(arg m703a_clock_window_s)</param>
+          <param name="min_range">$(arg jrt_min_range)</param>
+          <param name="max_range">$(arg jrt_max_range)</param>
+          <!-- Otwarcie portu resetuje Nano przez DTR; tyle trwa bootloader
+               mostka plus rozruch modułu po podaniu PWR_ON. -->
+          <param name="settle_ms">2500</param>
+        </hardware>
+        <sensor name="laser">
+          <state_interface name="range"/>
+          <state_interface name="signal_quality"/>
+          <state_interface name="status_code"/>
+          <!-- Czas pomiaru: stempel micros() z Nano przeliczony na zegar ROS
+               plus kotwica. To on decyduje, pod jakim kątem wyląduje punkt. -->
+          <state_interface name="sample_time"/>
+          <!-- Ten sam czas PRZED poprawką kotwicy - zostawiony, żeby dało się
+               ją policzyć offline z CSV bez powtarzania skanu. -->
+          <state_interface name="shot_start"/>
         </sensor>
       </ros2_control>
     </xacro:if>

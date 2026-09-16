@@ -166,6 +166,12 @@ provision_wifi_powersave() {
     fi
     run "sudo install -m644 ${HERE}/20-wlan0-ap.network /etc/systemd/network/20-wlan0-ap.network"
 
+    # Bez tego hotspot wstaje ~190 s zamiast ~60 s: wait-online i hostapd czekaja
+    # na siebie nawzajem, a kolko przecina dopiero 2-minutowy timeout. Szczegoly
+    # w samym pliku.
+    run "sudo install -d -m755 /etc/systemd/system/systemd-networkd-wait-online.service.d"
+    run "sudo install -m644 ${HERE}/wait-online-bathset.conf /etc/systemd/system/systemd-networkd-wait-online.service.d/10-bathset.conf"
+
     # cloud-init regenerowalby 50-cloud-init.yaml z wlan0 jako KLIENTEM domowego
     # WiFi, a wpa_supplicant odebralby wtedy interfejs hostapd. Objaw: hotspot
     # startuje i po chwili znika bez bledu.
@@ -227,6 +233,8 @@ EOF
 # --------------------------------------------------------------------- faza 4
 provision_env() {
     say "Faza 4: środowisko ROS w każdej sesji"
+    # Uprawnienie do SCHED_FIFO dla pętli ros2_control - uzasadnienie w pliku.
+    run "sudo install -m644 ${HERE}/99-bathset-realtime.conf /etc/security/limits.d/99-bathset-realtime.conf"
     # Profil Fast DDS z discovery unicastem - bez niego stacja nie zobaczy
     # topików płytki, bo multicast między nimi nie przechodzi (pomiar 2026-08-17,
     # szczegóły w samym pliku).

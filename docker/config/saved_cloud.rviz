@@ -1,0 +1,112 @@
+# Podgląd ZAPISANYCH chmur z CSV (scripts/publish_cloud_csv.py), lokalnie w kontenerze.
+#
+# Po co osobny plik: laser_cloud.rviz słucha /laser_cloud z płytki po WiFi przez
+# Best Effort - duża, pofragmentowana wiadomość potrafi przepaść i RViz zostaje
+# przy STARSZEJ, niepełnej chmurze, a po zatrzymaniu stacku nic jej nie odświeży
+# (2026-09-17: user widział "dziurę", której nie było w pliku).
+# Tu Reliable + Transient Local, publikacja lokalna, więc widać to, co w pliku.
+#
+# Kolor = odległość [m], skala 0-5 m (publikator z --color distance).
+# Dla koloru po jakości: --color sq i Max Intensity 3000.
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Ciemno_okno_zasloniete1
+      Splitter Ratio: 0.5
+    Tree Height: 600
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Name: root
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.5
+      Plane Cell Count: 20
+      Color: 80; 80; 80
+      Line Style:
+        Line Width: 0.01
+        Value: Lines
+      Reference Frame: <Fixed Frame>
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Ciemno_okno_zasloniete
+      Enabled: true
+      Topic:
+        Value: /saved_cloud_ciemno
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Style: Points
+      Size (Pixels): 4
+      Alpha: 1
+      Decay Time: 0
+      Position Transformer: XYZ
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Use rainbow: true
+      Invert Rainbow: false
+      Autocompute Intensity Bounds: false
+      Min Intensity: 0
+      Max Intensity: 5
+      Selectable: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Swiatlo_okno_otwarte
+      Enabled: false
+      Topic:
+        Value: /saved_cloud_swiatlo
+        Depth: 1
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Style: Points
+      Size (Pixels): 4
+      Alpha: 1
+      Decay Time: 0
+      Position Transformer: XYZ
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Use rainbow: true
+      Invert Rainbow: false
+      Autocompute Intensity Bounds: false
+      Min Intensity: 0
+      Max Intensity: 5
+      Selectable: true
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Names: true
+      Show Axes: true
+      Show Arrows: false
+      Marker Scale: 0.3
+      Update Interval: 0
+  Global Options:
+    Fixed Frame: base_link
+    Background Color: 25; 25; 30
+    Frame Rate: 20
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 5
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Pitch: 0.4
+      Yaw: 2.4
+      Near Clip Distance: 0.01
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400
+  Displays:
+    collapsed: false
